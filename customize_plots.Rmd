@@ -1,0 +1,148 @@
+---
+title: "Creating customized plots from the TPP package output"
+author: "Dorothee Childs"
+date: "5/15/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Preparation
+```{r}
+suppressMessages({
+  # load the TPP package
+  require("TPP")
+  # load the tidyverse package. 
+  # It will automatically load the packages 'ggplot2', 'tidyr' and 'dplyr',
+  # which we use for modelling, data manipulation and plotting in this script:
+  require("tidyverse")
+})
+
+# Set the path where we want the TPP package results to be stored:
+dir_out <- getwd()
+```
+
+# Run the TPP package
+We first import a small TPP-TR example dataset from the TPP package. The following command will load two objects containing the data and the config table. You can find further details about these objects, and how they are used to start the package, in the TPP package vignette.
+```{r}
+data("hdacTR_smallExample")
+```
+
+We start the TPP-TR workflow by typing:
+```{r, eval=TRUE, cache = TRUE, message=FALSE}
+TRresults <- analyzeTPPTR(configTable = hdacTR_config, 
+                          methods = "meltcurvefit",
+                          data = hdacTR_data, 
+                          nCores = 2,
+                          resultPath = dir_out, 
+                          plotCurves = FALSE) 
+```
+
+The last command performed normalization and melting curve fitting to all proteins.
+We could also have created plots in pdf format for each protein by setting
+`plotCurves = TRUE`. Instead, we next show you how you can create your own customized plots from the package output.
+
+# Generate our own melting curve plots
+
+## Load package results and convert to long tables:
+While the package was conducting the analysis, it created the subdirectory `'dataObj'` in the result path specified by `dir_out` and stored a couple of intermediate results at this location:
+```{r}
+dir(file.path(dir_out, "dataObj"))
+```
+
+
+Let's load the data that we need for plotting. The following object was created by the function `tpptrCurveFit`. It contains the normalized fold changes that were used for melting curve fitting, as well as the curve parameters from which we can re-construct the melting curves for the plot.
+
+```{r}
+load(file.path(dir_out, "dataObj", "fittedData.RData"))
+ls()
+```
+
+The last command loaded the object `trDataFitted`. It is a list of four objects of class 'ExpressionSet', each containing the results for one experiment:
+```{r}
+str(trDataFitted, 2)
+```
+
+Next we want to convert this data into a tidy format to facilitate vizualization with the 'ggplot2' package. For this purpose, the package offers the function `tpptrTidyUpESets` which can extract the relevant information from the ExpressionSet objects and convert it into a tidy format.
+
+```{r}
+# Obtain the fold changes stored in the "exprs" slots:
+foldChanges <- tpptrTidyUpESets(trDataFitted, returnType = "exprs")
+summary(foldChanges)
+```
+In this data frame, the column 'x' indicates the temperature, and 'y' the fold change per protein and isobaric label.
+
+```{r}
+# Obtain the additional annotation and fitted parameters per protein from the "featureData" slots:
+annotation <- tpptrTidyUpESets(trDataFitted, returnType = "featureData")
+summary(annotation)
+```
+
+## Plot example proteins:
+
+Let's select two proteins, HDAC1 and HDAC2:
+```{r}
+proteins <- c("HDAC1", "HDAC2")
+
+hdac_data <- filter(foldChanges, uniqueID %in% proteins) %>% # Filter for selected proteins
+  mutate(replicate = factor(replicate)) 
+
+```
+
+Let's first create a plot that contains the fold changes per protein and temperature:
+```{r}
+plt <- ggplot(hdac_data, aes(x = x, y = y, color = condition)) +
+  geom_point(aes(shape = replicate)) +
+  facet_grid(. ~ uniqueID)
+plt
+```
+
+
+In order to add the fitted melting curves, we predict them from the fitted curve parameters that were stored in the protein annotation:
+```{r}
+hdac_pars <- filter(annotation, uniqueID %in% proteins,
+                    variable %in% c("a", "b", "plateau")) %>%
+  mutate(value = as.numeric(value)) %>%
+  spread(variable, value) # convert to a wide table for the curve prediction below.
+
+hdac_pars
+```
+
+Now we compute the melting curves for each parameter set. We use the same equation as described by Savitski et al. (2014), Science, 346(6205).
+
+```{r}
+# Predict melting curves:
+melt_curve <- "(1 - Pl) * 1 / (1+exp(-(a/x-b))) + Pl"
+x_values <- seq(min(hdac_data$x), max(hdac_data$x), length.out = 100)
+
+predictions <- hdac_pars %>%
+  group_by(uniqueID, experiment, replicate, condition) %>%
+  do(data.frame(x = x_values, y = eval(parse(text = melt_curve), list(a = .$a, b=.$b, Pl=.$plateau, x = x_values))))
+
+summary(predictions)
+```
+
+We have now predicted 100 values for each curve that we can add to the plots created above.
+
+```{r}
+plt <- plt + 
+  geom_line(data = predictions, aes(linetype = replicate), show.legend = FALSE) +
+  facet_grid(. ~ uniqueID)
+plt
+```
+
+We have now created plots for each protein that display the measurements and the fitted melting curves. They are stored in objects of class `ggplot` and can be customized to suit your needs.
+
+For example, you can change the theme and colors in the following way:
+```{r}
+plt_customized <- plt + 
+  scale_color_manual(values = c(Treatment = "orange", Vehicle = "darkgray")) +
+  theme_bw()
+
+plt_customized
+```
+
+We hope this little tutorial could help you create your own customized plots from the TPP-TR output. Please don't hesitate to contact the Bioconductor support site (https://support.bioconductor.org/) for further questions.
+
