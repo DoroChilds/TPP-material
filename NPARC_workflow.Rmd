@@ -4,7 +4,7 @@ author: "Dorothee Childsh"
 date: "`r format(Sys.time(), '%d %B %Y,   %X')`"
 bibliography: bibliography.bib
 output: 
-  BiocStyle::html_document
+  BiocStyle::pdf_document
 ---
 
 ```{r setup, include=FALSE}
@@ -36,7 +36,7 @@ Let's take a look at the imported data:
 ```{r}
 tppData %>% 
   mutate(uniquePeptideMatches = factor(uniquePeptideMatches), 
-         molarConcentration = factor(molarConcentration), 
+         molarDrugConcentration = factor(molarDrugConcentration), 
          replicate = factor(replicate), 
          dataset = factor(dataset)) %>% 
   summary %>% 
