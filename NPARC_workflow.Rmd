@@ -22,6 +22,7 @@ Load necessary packages:
 library(tidyverse)
 ```
 
+This workflow shows how to reproduce the analysis described by [Childs, Bach, Franken et al. (2018): Non-parametric analysis of thermal proteome profiles reveals novel drug-binding proteins.](https://www.biorxiv.org/content/early/2018/07/22/373845)
 
 # Data import
 
