@@ -8,7 +8,7 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, cache = FALSE)
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
 options(knitr.kable.NA = '')
 ```
 
@@ -20,6 +20,7 @@ This workflow shows how to reproduce the analysis described by [Childs, Bach, Fr
 Load necessary packages:
 ```{r dependencies, message=FALSE}
 library(tidyverse)
+library(broom)
 ```
 
 # Data import
@@ -105,23 +106,27 @@ stk4_plot <- ggplot(stk4, aes(x = temperature, y = relAbundance)) +
 print(stk4_plot)
 ```
 
-We fit the null and alternative models to the data. The null model fits a sigmoid melting curve through all data points irrespective of experimental condition. The alternative model fits separate melting curves per experimental group (vehicle: $0 \mu$M staurosporine, treatment: $20 \mu$M staurosporine). 
+To assess whether there is a significant difference between both treatment groups, we fit a null and an alternative models to the data. The null model fits a sigmoid melting curve through all data points irrespective of experimental condition. The alternative model fits separate melting curves per experimental group (vehicle: 0 muM staurosporine, treatment: 20 muM staurosporine). 
 
-Because we have to repeat the fit several times for this workflow, we define a function that we can call repeatedly:
+Because we have to repeat the fitting several times in this workflow, we define a function that we can call repeatedly:
 ```{r}
 fitSingleSigmoid <- function(x, y){
-  m <- try(nls(formula= y ~ (1 - Pl)  / (1+exp((b - a/x))) + Pl, 
-               start=c(Pl = 0, a = 550, b = 10), data=list(x=x, y=y),
-               na.action = na.exclude, 
-               algorithm = "port",
-               lower = c(0.0, 1e-5, 1e-5), 
-               upper = c(1.5, 15000, 250),
-               control = nls.control(maxiter=50, warnOnly = TRUE)),
-           silent = TRUE)
+  m <- try(
+    nls(formula= y ~ (1 - Pl)  / (1+exp((b - a/x))) + Pl, 
+        start=c(Pl = 0, a = 550, b = 10), 
+        data=list(x=x, y=y),
+        na.action = na.exclude, 
+        algorithm = "port",
+        lower = c(0.0, 1e-5, 1e-5), 
+        upper = c(1.5, 15000, 250),
+        control = nls.control(maxiter=50, warnOnly = TRUE)),
+    silent = TRUE)
   
   return(m)
 }
 ```
+
+## Fit null models
 
 First, we use this function to fit the null model. In order to add the predicted curve to our data frame, we use the function `augment` from the `broom` package to obtain the predictions in tabular format. It also returns the residuals which we will need later for the hypothesis test.
 
@@ -141,13 +146,16 @@ stk4_plot <- stk4_plot +
 print(stk4_plot)
 ```
 
-Next we can fit the alternative model and add the predicted curves to our data frame:
+## Fit alternative models
+
+Next we fit the alternative model. Again, we compute the predicted values and the corresponding residuals by the `broom` package.
 ```{r}
 alternativePredictions <- stk4 %>%
 # Fit separate curves per treatment group:
   group_by(molarDrugConcentration) %>%
   do({
-    fit = fitSingleSigmoid(x = .$temperature, y = .$relAbundance)
+    fit = fitSingleSigmoid(x = .$temperature, 
+                           y = .$relAbundance)
     broom::augment(fit)
   }) %>%
   ungroup %>%
@@ -168,7 +176,7 @@ stk4 <- stk4 %>%
 
 
 ## Reproduce Figure 2 (A)/(B) of the paper
-Plot the curves predicted by the alternative model:
+Add the curves predicted by the alternative model to the plot:
 ```{r}
 stk4_plot <- stk4_plot +
   geom_line(data = distinct(stk4, temperature, molarDrugConcentration, alternativePrediction), 
@@ -178,6 +186,8 @@ print(stk4_plot)
 ```
 
 This plot corresponds to Figures 2(A) and 2(B) in the paper.
+
+## Compute RSS values
 
 In order to quantify the improvement in goodness-of-fit of the alternative model relative to the null model, we compute the sum of squared residuals (RSS). 
 
