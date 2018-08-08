@@ -1,0 +1,13 @@
+---
+title: "Non-parametric analysis of thermal proteome profiles"
+author: "Dorothee Childsh"
+date: "`r format(Sys.time(), '%d %B %Y,   %X')`"
+output: 
+  BiocStyle::pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This workflow shows how to reproduce the analysis described by [Childs, Bach, Franken et al. (2018): Non-parametric analysis of thermal proteome profiles reveals novel drug-binding proteins.](https://www.biorxiv.org/content/early/2018/07/22/373845)
