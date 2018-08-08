@@ -2,6 +2,7 @@
 title: "Non-parametric analysis of thermal proteome profiles"
 author: "Dorothee Childsh"
 date: "`r format(Sys.time(), '%d %B %Y,   %X')`"
+bibliography: bibliography.bib
 output: 
   BiocStyle::pdf_document
 ---
@@ -11,3 +12,14 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 This workflow shows how to reproduce the analysis described by [Childs, Bach, Franken et al. (2018): Non-parametric analysis of thermal proteome profiles reveals novel drug-binding proteins.](https://www.biorxiv.org/content/early/2018/07/22/373845)
+
+# Data import
+
+First we load the data from the different TPP experiments. All data have been downloaded from the supplements of the respective publications [@Savitski2014, @Franken2015, @Reinhard2015] converted into tidy format, and concatenated into one table. This table will be available as supplementary material to the paper in the future.
+
+```{r}
+tppData <- readRDS("tppData.Rds")
+```
+
+
+# Bibliography
