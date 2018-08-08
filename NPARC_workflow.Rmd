@@ -8,7 +8,7 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+knitr::opts_chunk$set(echo = TRUE, cache = FALSE)
 options(knitr.kable.NA = '')
 ```
 
@@ -22,11 +22,9 @@ Load necessary packages:
 library(tidyverse)
 ```
 
-This workflow shows how to reproduce the analysis described by [Childs, Bach, Franken et al. (2018): Non-parametric analysis of thermal proteome profiles reveals novel drug-binding proteins.](https://www.biorxiv.org/content/early/2018/07/22/373845)
-
 # Data import
 
-First we load the data from the different TPP experiments. All data have been downloaded from the supplements of the respective publications [@Savitski2014, @Franken2015, @Reinhard2015] converted into tidy format, and concatenated into one table. This table will be available as supplementary material to the paper in the future.
+First we load the data from the different TPP experiments. All data have been downloaded from the supplements of the respective publications [@Savitski2014, @Franken2015, @Reinhard2015] converted into tidy format, and concatenated into one table. This table will be made available as supplementary material to the paper. Until then, it can be found in the same folder as this vignette.
 
 ```{r load_data}
 tppData <- readRDS("tppData.Rds")
@@ -61,8 +59,8 @@ tppData <- tppData %>% filter(!is.na(relAbundance))
 ```
 
 
-Only leave proteins reproducibly observed with full melting curves in both replicates and treatment groups per dataset.
-A full melting curve is defined by the presence of measurements at all 10 temperatures for the protein.
+Finally, we remove all proteins not reproducibly observed with full melting curves in both replicates and treatment groups per dataset.
+A full melting curve is defined by the presence of measurements at all 10 temperatures for the given experimental group.
 
 ```{r rm_non_reproducibles, results='asis'}
 tppData <- tppData %>%
@@ -70,10 +68,12 @@ tppData <- tppData %>%
   mutate(n = n()) %>%
   group_by(dataset) %>%
   mutate(max_n = max(n)) %>% 
-  filter(n == max_n)
+  filter(n == max_n) %>%
+  dplyr::select(-n, -max_n)
 ```
 
-Count the numbers of proteins remaining in each dataset. They coincide with the values reported in Table 1 of the paper.
+## Reproduce Table 1 of the paper
+Count the numbers of proteins remaining in each dataset. They coincide with the values reported in Table 1.
 
 ```{r}
 tppData %>% 
@@ -84,5 +84,120 @@ tppData %>%
   knitr::kable()
 ```
 
+# Illustrative example
+
+We first illustrate the principles of nonparametric analysis of response curves (NPARC) on an example protein (STK4) from the staurosporine dataset. The same protein is shown in Figures 1 and 2 of the paper.
+
+Select protein:
+```{r}
+stk4 <- filter(tppData, dataset == "Staurosporine", grepl("STK4", uniqueID))
+```
+
+Plot measurements:
+```{r}
+stk4_plot <- ggplot(stk4, aes(x = temperature, y = relAbundance)) +
+  geom_point(aes(shape = factor(replicate), color = factor(molarDrugConcentration))) +
+  theme_bw() +
+  ggtitle("STK4") +
+  scale_color_manual("molar staurosporine concentration", 
+                     values = c("#808080", "#da7f2d"))
+
+print(stk4_plot)
+```
+
+We fit the null and alternative models to the data. The null model fits a sigmoid melting curve through all data points irrespective of experimental condition. The alternative model fits separate melting curves per experimental group (vehicle: $0 \mu$M staurosporine, treatment: $20 \mu$M staurosporine). 
+
+Because we have to repeat the fit several times for this workflow, we define a function that we can call repeatedly:
+```{r}
+fitSingleSigmoid <- function(x, y){
+  m <- try(nls(formula= y ~ (1 - Pl)  / (1+exp((b - a/x))) + Pl, 
+               start=c(Pl = 0, a = 550, b = 10), data=list(x=x, y=y),
+               na.action = na.exclude, 
+               algorithm = "port",
+               lower = c(0.0, 1e-5, 1e-5), 
+               upper = c(1.5, 15000, 250),
+               control = nls.control(maxiter=50, warnOnly = TRUE)),
+           silent = TRUE)
+  
+  return(m)
+}
+```
+
+First, we use this function to fit the null model. In order to add the predicted curve to our data frame, we use the function `augment` from the `broom` package to obtain the predictions in tabular format. It also returns the residuals which we will need later for the hypothesis test.
+
+```{r}
+nullFit <- fitSingleSigmoid(x = stk4$temperature, y = stk4$relAbundance)
+nullPredictions <- broom::augment(nullFit)
+
+stk4$nullPrediction <- nullPredictions$.fitted
+stk4$nullResiduals <- nullPredictions$.resid
+```
+
+Plot the curve predicted by the null model:
+```{r}
+stk4_plot <- stk4_plot +
+  geom_line(data = stk4, aes(y = nullPrediction))
+
+print(stk4_plot)
+```
+
+Next we can fit the alternative model and add the predicted curves to our data frame:
+```{r}
+alternativePredictions <- stk4 %>%
+# Fit separate curves per treatment group:
+  group_by(molarDrugConcentration) %>%
+  do({
+    fit = fitSingleSigmoid(x = .$temperature, y = .$relAbundance)
+    broom::augment(fit)
+  }) %>%
+  ungroup %>%
+  # Rename columns for merge to data frame:
+  dplyr::rename(alternativePrediction = .fitted,
+                alternativeResiduals = .resid,
+                temperature = x,
+                relAbundance = y)
+```
+
+Add the predicted values and corresponding residuals to our data frame:
+```{r}
+stk4 <- stk4 %>%
+  left_join(alternativePredictions, 
+            by = c("relAbundance", "temperature", "molarDrugConcentration")) %>%
+  distinct()
+```
+
+
+## Reproduce Figure 2 (A)/(B) of the paper
+Plot the curves predicted by the alternative model:
+```{r}
+stk4_plot <- stk4_plot +
+  geom_line(data = distinct(stk4, temperature, molarDrugConcentration, alternativePrediction), 
+            aes(y = alternativePrediction, color = factor(molarDrugConcentration)))
+
+print(stk4_plot)
+```
+
+This plot corresponds to Figures 2(A) and 2(B) in the paper.
+
+In order to quantify the improvement in goodness-of-fit of the alternative model relative to the null model, we compute the sum of squared residuals (RSS). 
+
+```{r compute_rss_stk4}
+rssPerModel <- stk4 %>%
+  summarise(rssNull = sum(nullResiduals^2),
+            rssAlternative = sum(alternativeResiduals^2))
+
+knitr::kable(rssPerModel, digits = 4)
+```
+
+These values will be used to construct the F-statistic according to
+
+\begin{equation}
+\label{eq:f_stat}
+    \operatorname{F}_{i} = \frac{\operatorname{d}_{i2}}{\operatorname{d}_{i1}} \cdot \frac{\operatorname{RSS}^{0}_{i} - \operatorname{RSS}^{1}_{i}}{\operatorname{RSS}^{1}_{i}}.
+\end{equation}
+
+To compute this statistic and to derive a p-value, we need the degrees of freedom $\operatorname{d}_{i1}, \operatorname{d}_{i2}$. They cannot be analytically derived due to the correlated nature of the measurements. The paper describes how to estimate these values from the RSS-values of all proteins in the dataset. In the following Section, we illustrate how to repeat the model fitting for all proteins of a dataset and how to perform hypothesis testing on these models.
+
+# Analyzing the datasets
 
 # Bibliography
