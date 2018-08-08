@@ -2,12 +2,62 @@
 title: "Non-parametric analysis of thermal proteome profiles"
 author: "Dorothee Childsh"
 date: "`r format(Sys.time(), '%d %B %Y,   %X')`"
+bibliography: bibliography.bib
 output: 
-  BiocStyle::pdf_document
+  BiocStyle::html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, cache = FALSE)
+options(knitr.kable.NA = '')
 ```
 
+# Introduction
 This workflow shows how to reproduce the analysis described by [Childs, Bach, Franken et al. (2018): Non-parametric analysis of thermal proteome profiles reveals novel drug-binding proteins.](https://www.biorxiv.org/content/early/2018/07/22/373845)
+
+# Preparation
+
+Load necessary packages:
+```{r dependencies, message=FALSE}
+library(tidyverse)
+```
+
+
+# Data import
+
+First we load the data from the different TPP experiments. All data have been downloaded from the supplements of the respective publications [@Savitski2014, @Franken2015, @Reinhard2015] converted into tidy format, and concatenated into one table. This table will be available as supplementary material to the paper in the future.
+
+```{r}
+tppData <- readRDS("tppData.Rds")
+```
+
+Let's take a look at the imported data:
+```{r}
+tppData %>% 
+  mutate(uniquePeptideMatches = factor(uniquePeptideMatches), 
+         molarConcentration = factor(molarConcentration), 
+         replicate = factor(replicate), 
+         dataset = factor(dataset)) %>% 
+  summary %>% 
+  knitr::kable()
+```
+
+# Data preprocessing
+
+First, we remove all decoy proteins remaining in the panobinostat data. They can be recognized by the prefix `###`, which was assigned by the quantification software `isobarQuant`.
+```{r remove_decoys}
+n_old <- nrow(tppData %>% distinct(dataset, uniqueID))
+tppData <- tppData %>% filter(!grepl("###[[:alnum:]]*###", uniqueID))
+n_new <- nrow(tppData %>% distinct(dataset, uniqueID))
+message("Removed ", n_old - n_new, " decoy proteins.\n")
+```
+
+Next, we remove all proteins that only contain missing values
+```{r remove_NAs}
+n_old <- n_new
+tppData <- tppData %>% filter(!is.na(relAbundance))
+n_new <- nrow(tppData %>% distinct(dataset, uniqueID))
+message("Removed ", n_old - n_new, " proteins with missing measurements in all treament groups and replicates per dataset.\n")
+```
+
+# Bibliography
