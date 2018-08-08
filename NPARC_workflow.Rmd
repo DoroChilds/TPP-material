@@ -8,7 +8,7 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, cache = FALSE)
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
 options(knitr.kable.NA = '')
 ```
 
@@ -28,15 +28,14 @@ This workflow shows how to reproduce the analysis described by [Childs, Bach, Fr
 
 First we load the data from the different TPP experiments. All data have been downloaded from the supplements of the respective publications [@Savitski2014, @Franken2015, @Reinhard2015] converted into tidy format, and concatenated into one table. This table will be available as supplementary material to the paper in the future.
 
-```{r}
+```{r load_data}
 tppData <- readRDS("tppData.Rds")
 ```
 
 Let's take a look at the imported data:
-```{r}
+```{r summarize_data}
 tppData %>% 
-  mutate(uniquePeptideMatches = factor(uniquePeptideMatches), 
-         molarDrugConcentration = factor(molarDrugConcentration), 
+  mutate(molarDrugConcentration = factor(molarDrugConcentration), 
          replicate = factor(replicate), 
          dataset = factor(dataset)) %>% 
   summary %>% 
@@ -46,19 +45,44 @@ tppData %>%
 # Data preprocessing
 
 First, we remove all decoy proteins remaining in the panobinostat data. They can be recognized by the prefix `###`, which was assigned by the quantification software `isobarQuant`.
-```{r remove_decoys}
-n_old <- nrow(tppData %>% distinct(dataset, uniqueID))
+
+```{r remove_decoys, results='asis'}
 tppData <- tppData %>% filter(!grepl("###[[:alnum:]]*###", uniqueID))
-n_new <- nrow(tppData %>% distinct(dataset, uniqueID))
-message("Removed ", n_old - n_new, " decoy proteins.\n")
+```
+
+Next, we remove all proteins that were not found with at least one unique peptide
+```{r qupm_filter, results='asis'}
+tppData <- filter(tppData, uniquePeptideMatches >= 1)
 ```
 
 Next, we remove all proteins that only contain missing values
-```{r remove_NAs}
-n_old <- n_new
+```{r remove_NAs, results='asis'}
 tppData <- tppData %>% filter(!is.na(relAbundance))
-n_new <- nrow(tppData %>% distinct(dataset, uniqueID))
-message("Removed ", n_old - n_new, " proteins with missing measurements in all treament groups and replicates per dataset.\n")
 ```
+
+
+Only leave proteins reproducibly observed with full melting curves in both replicates and treatment groups per dataset.
+A full melting curve is defined by the presence of measurements at all 10 temperatures for the protein.
+
+```{r rm_non_reproducibles, results='asis'}
+tppData <- tppData %>%
+  group_by(dataset, uniqueID) %>%
+  mutate(n = n()) %>%
+  group_by(dataset) %>%
+  mutate(max_n = max(n)) %>% 
+  filter(n == max_n)
+```
+
+Count the numbers of proteins remaining in each dataset. They coincide with the values reported in Table 1 of the paper.
+
+```{r}
+tppData %>% 
+  distinct(dataset, uniqueID) %>% 
+  distinct %>% 
+  group_by(dataset) %>% 
+  tally %>%
+  knitr::kable()
+```
+
 
 # Bibliography
