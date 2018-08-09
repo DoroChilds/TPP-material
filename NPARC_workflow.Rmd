@@ -1,10 +1,10 @@
 ---
 title: "Non-parametric analysis of thermal proteome profiles"
-author: "Dorothee Childsh"
+author: "Dorothee Childs, Nils Kurzawa"
 date: "`r format(Sys.time(), '%d %B %Y,   %X')`"
 bibliography: bibliography.bib
 output: 
-  BiocStyle::pdf_document
+  BiocStyle::html_document
 ---
 
 ```{r setup, include=FALSE}
@@ -31,7 +31,14 @@ First we load the data from the different TPP experiments. All data have been do
 tppData <- readRDS("tppData.Rds")
 ```
 
-Let's take a look at the imported data:
+Let's take a look at the imported data.
+
+Here are the first lines:
+```{r}
+head(tppData) %>% knitr::kable()
+```
+
+And a data summary:
 ```{r summarize_data}
 tppData %>% 
   mutate(molarDrugConcentration = factor(molarDrugConcentration), 
@@ -70,7 +77,8 @@ tppData <- tppData %>%
   group_by(dataset) %>%
   mutate(max_n = max(n)) %>% 
   filter(n == max_n) %>%
-  dplyr::select(-n, -max_n)
+  dplyr::select(-n, -max_n) %>%
+  ungroup
 ```
 
 ## Reproduce Table 1 of the paper
@@ -111,18 +119,14 @@ To assess whether there is a significant difference between both treatment group
 Because we have to repeat the fitting several times in this workflow, we define a function that we can call repeatedly:
 ```{r}
 fitSingleSigmoid <- function(x, y){
-  m <- try(
-    nls(formula= y ~ (1 - Pl)  / (1+exp((b - a/x))) + Pl, 
+  nls(formula= y ~ (1 - Pl)  / (1+exp((b - a/x))) + Pl, 
         start=c(Pl = 0, a = 550, b = 10), 
         data=list(x=x, y=y),
         na.action = na.exclude, 
         algorithm = "port",
         lower = c(0.0, 1e-5, 1e-5), 
         upper = c(1.5, 15000, 250),
-        control = nls.control(maxiter=50, warnOnly = TRUE)),
-    silent = TRUE)
-  
-  return(m)
+        control = nls.control(maxiter=50, warnOnly = TRUE))
 }
 ```
 
@@ -208,6 +212,65 @@ These values will be used to construct the F-statistic according to
 
 To compute this statistic and to derive a p-value, we need the degrees of freedom $\operatorname{d}_{i1}, \operatorname{d}_{i2}$. They cannot be analytically derived due to the correlated nature of the measurements. The paper describes how to estimate these values from the RSS-values of all proteins in the dataset. In the following Section, we illustrate how to repeat the model fitting for all proteins of a dataset and how to perform hypothesis testing on these models.
 
-# Analyzing the datasets
+# Analyzing the datasets 
+
+In order to analyze all datasets as described in the paper, we fit null and alternative models to each protein in each dataset, as shown in the following.
+
+Before starting the model fitting, we combine both dasatinib datasets into one dataset with four replicates of the vehicle experiments, and two replicates in each of two treatment groups. In one treatment group, dasatinib was administered with 0.5 muM concentration, and with 5 muM in the other group. 
+
+```{r}
+# Remove suffix from dataset names that distinguishes both dasatinib datasets
+tppData <- tppData %>%
+  mutate(dataset = gsub(" 0.5| 5", "", dataset))
+
+# Check result: List all dataset names and the administered drug concentrations
+tppData %>% 
+  distinct(dataset, molarDrugConcentration) %>% 
+  filter(molarDrugConcentration > 0) %>%
+  knitr::kable()
+```
+
+## Fit null models
+
+We fit null models by the same function as illustrated on the STK4 example above. In order to iterate over all proteins in each dataset, we group the data by proteins IDs and dataset, and loop over all groups by the `do` command of the `dplyr` package. Again, we compute the predicted values and the corresponding residuals by the `broom` package.
+
+```{r, warning=FALSE, cache=TRUE}
+nullPredictions <- tppData %>%
+# Fit separate curves per protein and dataset:
+  group_by(dataset, uniqueID) %>%
+  do({
+    fit = fitSingleSigmoid(x = .$temperature, 
+                           y = .$relAbundance)
+      broom::augment(fit)
+  }) %>%
+  ungroup %>%
+  # Rename columns for merge to data frame:
+  dplyr::rename(nullPrediction = .fitted,
+                nullResiduals = .resid,
+                temperature = x,
+                relAbundance = y)
+```
+
+## Fit alternative models
+
+Next we fit the alternative models:
+```{r, warning=FALSE, cache=TRUE}
+alternativePredictions <- tppData %>%
+# Fit separate curves per protein and dataset and treatment group:
+  group_by(dataset, uniqueID, molarDrugConcentration) %>%
+  do({
+    fit = fitSingleSigmoid(x = .$temperature, 
+                           y = .$relAbundance)
+    broom::augment(fit)
+  }) %>%
+  ungroup %>%
+  # Rename columns for merge to data frame:
+  dplyr::rename(alternativePrediction = .fitted,
+                alternativeResiduals = .resid,
+                temperature = x,
+                relAbundance = y)
+```
+
+
 
 # Bibliography
