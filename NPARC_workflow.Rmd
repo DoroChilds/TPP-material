@@ -119,15 +119,14 @@ To assess whether there is a significant difference between both treatment group
 Because we have to repeat the fitting several times in this workflow, we define a function that we can call repeatedly:
 ```{r define_fit_fct}
 fitSingleSigmoid <- function(x, y, start=c(Pl = 0, a = 550, b = 10)){
-  try(nls(formula= y ~ (1 - Pl)  / (1+exp((b - a/x))) + Pl, 
-        start=start, 
-        data=list(x=x, y=y),
-        na.action = na.exclude, 
-        algorithm = "port",
-        lower = c(0.0, 1e-5, 1e-5), 
-        upper = c(1.5, 15000, 250),
-        control = nls.control(maxiter=50)), 
-      silent = TRUE)
+  nls(formula= y ~ (1 - Pl)  / (1+exp((b - a/x))) + Pl, 
+      start=start, 
+      data=list(x=x, y=y),
+      na.action = na.exclude, 
+      algorithm = "port",
+      lower = c(0.0, 1e-5, 1e-5), 
+      upper = c(1.5, 15000, 250),
+      control = nls.control(maxiter=50, warnOnly = TRUE))
 }
 ```
 
@@ -236,34 +235,46 @@ tppData %>%
 ```
 
 ## Define functions
-We fit the models by the same function as illustrated on the STK4 example above. In order to iterate over all proteins and experimental factor, we split the data by the `dplyr::group_by` function, and loop over all subsets by the `dplyr::do` function Again, we compute the predicted values and the corresponding residuals by the `broom` package. Because we will need to re-use the code for invoking the model fitting and returning the predicted values and residuals, we encapsulate it into a function. This way, we will be able to re-use this function for the null and alternative models. It will also make it easier to debug the code when it lives in a separate function.
+We fit the models by the same function as illustrated on the STK4 example above. In order to iterate over all proteins and experimental factors, we split the data by the `dplyr::group_by` function, and loop over all subsets by the `dplyr::do` function Again, we compute the predicted values and the corresponding residuals by the `broom` package. Because we will need to re-use the code for invoking the model fitting and computation of the residuals, we encapsulate it into a function that we can re-use for the null and alternative model fits of each protein. It will also make debugging easier if the code lives within a separate function.
 
-For a few proteins, the nonlinear least-squares optimization will not converge with the given start parameters. For some of these proteins, convergence can be obtained by permuting the start parameters. To this purpose, we write a function that starts the optimization repeatedly with randomly permuted start parameters for such proteins:
+For a few proteins, the nonlinear least-squares optimization will not converge with the given start parameters. For some of these proteins, however, convergence can be obtained after adding a small random noise to the start paramters. To this purpose, we write a function that starts the optimization repeatedly with randomly perturbed start parameters for such proteins:
 
-```{r define_fit_wrapper_fct}
-repeatedFits <- function(x, y){
+```{r define_repeatFits}
+repeatFits <- function(x, y){
   
   start <- c(Pl = 0, a = 550, b = 10)
   
-  m <- fitSingleSigmoid(x = x, y = y, start = start)
-  
   i <- 0
   
-  while (inherits(m, "try-error") & i < 100){
+  doFit <- TRUE
+  
+  doVaryPars <- FALSE
+  
+  set.seed(123)
+  
+  while (doFit){
     
-    start <- start * 1 + rnorm(length(start), 0, 0.1)
+    startTmp <- start * (1 + doVaryPars*runif(1, -0.5, 0.5))
     
-    m <- fitSingleSigmoid(x = x, y = y, start = start)
+    m <- fitSingleSigmoid(x = x, y = y, start = startTmp)
     
     i <- i + 1
+    
+    doFit <- !m$convInfo$isConv & i < 100
+    
+    doVaryPars <- TRUE
   }
+  
+  if (!m$convInfo$isConv & i == 100){
+    class(m) <- "try-error"
+  }
+  
+  return(m)
 }
-
-# hier weiter
 ```
 
 
-```{r define_fct_fit_and_predict}
+```{r define_fct_returnPredictions}
 returnPredictions <- function(dat){
   # The data frame dat contains the subset of the data for one protein and 
   # selected experimental factor. It has the following columns:
@@ -273,25 +284,28 @@ returnPredictions <- function(dat){
   # - molarDrugConcentration
   
   # Fit model:
-  fit <- repeatedFits(x = dat$temperature, 
-                          y = dat$relAbundance)
+  fit <- repeatFits(x = dat$temperature, 
+                    y = dat$relAbundance)
   
   # Check whether the model fit converged. If yes, obtain the predicted values 
   # and residuals and add annotation from the original data. 
   if (!inherits(fit, "try-error")){
     
-    # Obtain the predicted values and residuals:
+    # Obtain data frame with predicted values and residuals:
     out <- broom::augment(fit) %>%
-      # Annotate by replicate and treatment group
+      # Annotate by replicate and treatment group:
       mutate(replicate = dat$replicate,
              molarDrugConcentration = dat$molarDrugConcentration) %>%
-      # Rename generic columns that were added by the augment function instead of 
-      # temperature and relAbundance:
+      # Rename generic columns `x`. `y` that were added by the augment function 
+      # to `temperature` and `relAbundance`:
       dplyr::rename(temperature = x, relAbundance = y)
     
   } else {
     # If model fit did not converge, return an empty data frame.
-    out <- tibble()
+    out <- tibble(temperature = dat$temperature, 
+                  relAbundance = NA,
+                  replicate = dat$replicate,
+                  molarDrugConcentration = dat$molarDrugConcentration)
   }
   
   return(out)
@@ -304,7 +318,10 @@ returnPredictions <- function(dat){
 
 Now we can fit the null models to each protein in each dataset:
 ```{r fit_null_all_datasets, warning=FALSE, cache=TRUE}
-nullPredictions <- tppData %>%
+# debug(returnPredictions)
+# debug(repeatFits)
+
+nullPredictions <- tppData %>% #filter(uniqueID == "ABHD10_NA", dataset == "Panobinostat") %>%
   # Iterate over all proteins per dataset:
   group_by(dataset, uniqueID) %>%
   do(
@@ -323,6 +340,7 @@ alternativePredictions <- tppData %>%
   # Iterate over all proteins and treatment groups per dataset:
   group_by(dataset, uniqueID, molarDrugConcentration) %>%
   do(
+    # Invoke model fitting as described above
     returnPredictions(.)
     ) %>%
   ungroup
@@ -345,6 +363,16 @@ allPredictions <- full_join(dat1, dat2,
                                    "relAbundance"))
 ```
 
+Let us look at the columns of the data frame `allPredictions`:
+```{r summary_allPredictions}
+allPredictions %>%
+  mutate(dataset = factor(dataset),
+         temperature = factor(temperature),
+         replicate = factor(replicate),
+         molarDrugConcentration = factor(molarDrugConcentration)) %>%
+  summary(digits = 2) %>% knitr::kable()
+```
+
 
 ## Compute RSS values
 In order to quantify the improvement in goodness-of-fit of the alternative model relative to the null model, we compute the sum of squared residuals (RSS). 
@@ -353,21 +381,110 @@ In order to quantify the improvement in goodness-of-fit of the alternative model
 rssPerModel <- allPredictions %>%
   group_by(dataset, uniqueID) %>%
   summarise(n = sum(!is.na(nullResiduals) * !is.na(alternativeResiduals)), 
-            rssNull = sum(nullResiduals^2),
-            rssAlternative = sum(alternativeResiduals^2))
+            rssNull = sum(nullResiduals^2, na.rm = FALSE),
+            rssAlternative = sum(alternativeResiduals^2, na.rm = FALSE)) %>%
+  ungroup
 
 rssPerModel %>%
   group_by(dataset) %>%
-  do(table(.$n) %>% as.tibble())
+  do(table(.$n) %>% as.tibble()) %>%
+  knitr::kable()
 ```
 
 We also compute the reduction in goodness-of-fit for each protein:
 ```{r}
 rssPerModel <- rssPerModel %>%
   mutate(rssDiff = rssNull - rssAlternative)
-
-knitr::kable(head(rssPerModel), digits = 4)
 ```
+
+Let us look at the first entries and at the column summaries of the data frame `rssPerModel`:
+
+```{r head_rssPerModel}
+rssPerModel %>% 
+  head %>% 
+  knitr::kable(digits = 4)
+```
+
+```{r summary_rssPerModel}
+rssPerModel %>%
+  mutate(dataset = factor(dataset),
+         n = factor(n)) %>%
+  summary(digits = 2) %>% 
+  knitr::kable()
+```
+
+## Compare to results published in the manuscript
+```{r}
+#  for comparison: load in-house code results as reported in the paper
+f_paper_results <- "/Users/dorotheechilds/Work/Projects/Thermal_proteome_profiling/Gitlab_repositories/Gitlab_paper_nonparametric_TPP/master/04 Data/cache/NPARC_results_min_qupm=1.Rds"
+
+paperResults <- readRDS(f_paper_results)
+
+paperResults <- paperResults %>%
+  dplyr::select(dataset = datasetID, uniqueID, nPaper = fitted_values, rssNullPaper = rss0, rssAlternativePaper = rss1) %>%
+  mutate(rssDiffPaper = rssNullPaper - rssAlternativePaper) %>%
+  mutate(dataset = plyr::mapvalues(dataset,
+                                   c("ATP_Reinhardetal_2015_PBS", "Dasatinib_Savitskietal_2014", "Panobinostat_Frankenetal_2015", "Staurosporine_Savitskietal_2014"),
+                                   c("ATP", "Dasatinib", "Panobinostat", "Staurosporine"))) %>%
+  filter(dataset %in% c("ATP", "Dasatinib", "Panobinostat", "Staurosporine"))
+
+paperResults %>%
+  mutate(dataset = factor(dataset),
+         nPaper = factor(nPaper)) %>%
+  filter(!is.na(nPaper)) %>%
+  summary(digits = 2) %>% 
+  knitr::kable()
+```
+
+```{r}
+comparison <- full_join(rssPerModel, paperResults) %>%  
+  mutate(diffToPaperNull = rssNullPaper - rssNull) %>%
+  mutate(diffToPaperAlternative = rssAlternativePaper - rssAlternative) 
+
+```
+
+```{r}
+library(plotly)
+
+plt <- ggplot(comparison) +
+  geom_point(aes(rssNullPaper, y = abs(rssNullPaper - rssNull), key = uniqueID)) +
+  facet_wrap(~ dataset) +
+  # coord_equal() +
+  scale_x_log10() +
+  # scale_y_log10() +
+  theme_bw()
+
+plotly::ggplotly(plt)
+```
+
+```{r}
+comparison %>%
+  arrange(-abs(diffToPaperNull), - abs(diffToPaperAlternative)) %>%
+  head(10)
+
+
+comparison %>%
+  filter(is.na(diffToPaperNull)) %>%
+  filter(dataset == "Panobinostat")
+```
+
+```{r}
+datTmp <- filter(tppData, uniqueID == "RRP9_NA", dataset == "Panobinostat")
+predTmp <- filter(allPredictions, uniqueID == "RRP9_NA", dataset == "Panobinostat")
+
+ggplot(predTmp, aes(x = temperature, y = relAbundance)) +
+  geom_point(aes(shape = factor(replicate), color = factor(molarDrugConcentration))) +
+  geom_line(aes(y = alternativePrediction, color = factor(molarDrugConcentration))) +
+  theme_bw() +
+  ggtitle("RRP9_NA") +
+  scale_color_manual("molar panobinostat concentration", 
+                     values = c("1e-06" = "#da7f2d",
+                                "0" = "#808080"))
+
+
+```
+
+
 
 
 ## Compute test statistics
@@ -383,23 +500,23 @@ where $V$ is the variance of the distribution, and $M$ is the mean of the distri
 We estimate $V$ and $M$ from the empirical distributions of the RSS differences $(\operatorname{RSS}^1 - \operatorname{RSS}^0)$. To increase robustness, we estimate $M$ and $V$ by their D-estimates @Marazzi2002 (median and median absolute deviation). Values of $(\operatorname{RSS}^1 - \operatorname{RSS}^0)$ within the upper 5\%-quantile are excluded for estimation of $M$ and $V$, but their respective proteins were included again for p-value calculation.
 
 ```{r estimate_scaling_factors}
-rssPerModel <- rssPerModel %>%
-  group_by(dataset) %>%
-  filter(rssDiff <= quantile(rssDiff, 0.95, na.rm = TRUE))
+rssFiltered <- rssPerModel %>%
+  group_by(dataset)# %>%
+  # filter(rssDiff <= quantile(rssDiff, 0.99, na.rm = TRUE))
 
-scalingFactors <- rssPerModel %>%
+scalingFactors <- rssFiltered %>%
   group_by(dataset) %>%
-  summarise(M = median(rssDiff), V = mad(rssDiff)^2) %>%
+  summarise(M = median(rssDiff, na.rm = T), V = mad(rssDiff, na.rm = T)^2) %>%
   ungroup %>%
   mutate(s0_sq = 1/2 * V/M)
 
-scalingFactors
+scalingFactors %>% knitr::kable(digits = 9)
 ```
 
 
 # Session info
 
-```{r sesssion}
+```{r session}
 devtools::session_info()
 ```
 
