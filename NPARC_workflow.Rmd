@@ -392,104 +392,143 @@ rssPerModel %>%
 ```
 
 We also compute the reduction in goodness-of-fit for each protein:
-```{r}
+```{r computeRSSdiff}
 rssPerModel <- rssPerModel %>%
   mutate(rssDiff = rssNull - rssAlternative)
+```
+
+Proteins for which $\operatorname{RSS}^1$ is not smaller than $\operatorname{RSS}^0)$ are excluded from p-value calculation.
+```{r filterRSS}
+rssFiltered <- rssPerModel %>% filter(rssDiff > 0)
 ```
 
 Let us look at the first entries and at the column summaries of the data frame `rssPerModel`:
 
 ```{r head_rssPerModel}
-rssPerModel %>% 
+rssFiltered %>% 
   head %>% 
   knitr::kable(digits = 4)
 ```
 
 ```{r summary_rssPerModel}
-rssPerModel %>%
+rssFiltered %>%
   mutate(dataset = factor(dataset),
          n = factor(n)) %>%
   summary(digits = 2) %>% 
   knitr::kable()
 ```
 
-## Compare to results published in the manuscript
-```{r}
-#  for comparison: load in-house code results as reported in the paper
-f_paper_results <- "/Users/dorotheechilds/Work/Projects/Thermal_proteome_profiling/Gitlab_repositories/Gitlab_paper_nonparametric_TPP/master/04 Data/cache/NPARC_results_min_qupm=1.Rds"
+<!-- <!-- ## Compare to results published in the manuscript --> -->
+<!-- ```{r load_paper_results, echo = FALSE, eval=FALSE} -->
+<!-- #  for comparison: load in-house code results as reported in the paper -->
+<!-- f_paper_results <- "/Users/dorotheechilds/Work/Projects/Thermal_proteome_profiling/Gitlab_repositories/Gitlab_paper_nonparametric_TPP/master/04 Data/cache/NPARC_results_min_qupm=1.Rds" -->
 
-paperResults <- readRDS(f_paper_results)
+<!-- paperResults <- readRDS(f_paper_results) -->
 
-paperResults <- paperResults %>%
-  dplyr::select(dataset = datasetID, uniqueID, nPaper = fitted_values, rssNullPaper = rss0, rssAlternativePaper = rss1) %>%
-  mutate(rssDiffPaper = rssNullPaper - rssAlternativePaper) %>%
-  mutate(dataset = plyr::mapvalues(dataset,
-                                   c("ATP_Reinhardetal_2015_PBS", "Dasatinib_Savitskietal_2014", "Panobinostat_Frankenetal_2015", "Staurosporine_Savitskietal_2014"),
-                                   c("ATP", "Dasatinib", "Panobinostat", "Staurosporine"))) %>%
-  filter(dataset %in% c("ATP", "Dasatinib", "Panobinostat", "Staurosporine"))
+<!-- paperResults <- paperResults %>% -->
+<!--   dplyr::select(dataset = datasetID, uniqueID, nPaper = fitted_values, rssNullPaper = rss0, rssAlternativePaper = rss1) %>% -->
+<!--   mutate(rssDiffPaper = rssNullPaper - rssAlternativePaper) %>% -->
+<!--   mutate(dataset = plyr::mapvalues(dataset, -->
+<!--                                    c("ATP_Reinhardetal_2015_PBS", "Dasatinib_Savitskietal_2014", "Panobinostat_Frankenetal_2015", "Staurosporine_Savitskietal_2014"), -->
+<!--                                    c("ATP", "Dasatinib", "Panobinostat", "Staurosporine"))) %>% -->
+<!--   filter(dataset %in% c("ATP", "Dasatinib", "Panobinostat", "Staurosporine")) -->
 
-paperResults %>%
-  mutate(dataset = factor(dataset),
-         nPaper = factor(nPaper)) %>%
-  filter(!is.na(nPaper)) %>%
-  summary(digits = 2) %>% 
-  knitr::kable()
-```
+<!-- paperResults %>% -->
+<!--   mutate(dataset = factor(dataset), -->
+<!--          nPaper = factor(nPaper)) %>% -->
+<!--   filter(!is.na(nPaper)) %>% -->
+<!--   summary(digits = 2) %>%  -->
+<!--   knitr::kable() -->
+<!-- ``` -->
 
-```{r}
-comparison <- full_join(rssPerModel, paperResults) %>%  
-  mutate(diffToPaperNull = rssNullPaper - rssNull) %>%
-  mutate(diffToPaperAlternative = rssAlternativePaper - rssAlternative) 
+<!-- ```{r add_paper_results, echo = FALSE, eval=FALSE} -->
+<!-- comparison <- full_join(rssPerModel, paperResults) %>%   -->
+<!--   mutate(diffToPaperNull = rssNullPaper - rssNull) %>% -->
+<!--   mutate(diffToPaperAlternative = rssAlternativePaper - rssAlternative)  -->
+<!-- ``` -->
 
-```
-
-```{r}
-library(plotly)
-
-plt <- ggplot(comparison) +
-  geom_point(aes(rssNullPaper, y = abs(rssNullPaper - rssNull), key = uniqueID)) +
-  facet_wrap(~ dataset) +
-  # coord_equal() +
-  scale_x_log10() +
-  # scale_y_log10() +
-  theme_bw()
-
-plotly::ggplotly(plt)
-```
-
-```{r}
-comparison %>%
-  arrange(-abs(diffToPaperNull), - abs(diffToPaperAlternative)) %>%
-  head(10)
+<!-- ```{r find_diffs_to_paper_results, echo = FALSE, eval=FALSE} -->
+<!-- comparison %>% -->
+<!--   arrange(-abs(diffToPaperNull), - abs(diffToPaperAlternative)) %>% -->
+<!--   head(10) -->
 
 
-comparison %>%
-  filter(is.na(diffToPaperNull)) %>%
-  filter(dataset == "Panobinostat")
-```
+<!-- comparison %>% -->
+<!--   filter(is.na(diffToPaperNull)) %>% -->
+<!--   filter(dataset == "Panobinostat") -->
+<!-- ``` -->
 
-```{r}
-datTmp <- filter(tppData, uniqueID == "RRP9_NA", dataset == "Panobinostat")
-predTmp <- filter(allPredictions, uniqueID == "RRP9_NA", dataset == "Panobinostat")
+<!-- ```{r plot_diffs_to_paper_results, echo = FALSE, eval=FALSE} -->
+<!-- datTmp <- filter(tppData, uniqueID == "RRP9_NA", dataset == "Panobinostat") -->
+<!-- predTmp <- filter(allPredictions, uniqueID == "RRP9_NA", dataset == "Panobinostat") -->
 
-ggplot(predTmp, aes(x = temperature, y = relAbundance)) +
-  geom_point(aes(shape = factor(replicate), color = factor(molarDrugConcentration))) +
-  geom_line(aes(y = alternativePrediction, color = factor(molarDrugConcentration))) +
-  theme_bw() +
-  ggtitle("RRP9_NA") +
-  scale_color_manual("molar panobinostat concentration", 
-                     values = c("1e-06" = "#da7f2d",
-                                "0" = "#808080"))
-
-
-```
-
-
+<!-- ggplot(predTmp, aes(x = temperature, y = relAbundance)) + -->
+<!--   geom_point(aes(shape = factor(replicate), color = factor(molarDrugConcentration))) + -->
+<!--   geom_line(aes(y = alternativePrediction, color = factor(molarDrugConcentration))) + -->
+<!--   theme_bw() + -->
+<!--   ggtitle("RRP9_NA") + -->
+<!--   scale_color_manual("molar panobinostat concentration",  -->
+<!--                      values = c("1e-06" = "#da7f2d", -->
+<!--                                 "0" = "#808080")) -->
+<!-- ``` -->
 
 
 ## Compute test statistics
 
-In order to compute F-statistics per protein and dataset according to Equation(\ref{eq:f_stat}), we need to estimate the degrees of freedom. As described in the paper, we obtain these by fitting $\chi^2$ distributions to the numerator and denominator. To enable fitting of the distributions, we first need to re-scale the variables by a scaling factor. Because the scaling factors are characteristic for each dataset (it depends on the variances of the residuals in the respective dataset), we estimate them from the data according to:
+### Why we need to estimate the degrees of freedom
+
+In order to compute F-statistics per protein and dataset according to Equation (\ref{eq:f_stat}), we need to know the degrees of freedom of the corresponding null distribution. If we could assume independent and identically distributed (iid) residuals, we could compute them from the number of fitted values and model parameters. In the following, we will show why this simple equation is not appropriate for the curve data we are working with.
+
+First, we compute the degrees of freedom that we would assume for iid residuals:
+```{r compute_DOF_iid}
+DOF <- rssFiltered %>%
+  mutate(paramsNull = 3,
+         paramsAlternative = ifelse(n > 40, yes = 9, no = 6)) %>%
+  mutate(DOF1 = paramsAlternative - paramsNull,
+         DOF2 = n - paramsAlternative)
+```
+
+Let us take a look at the computed degrees of freedom:
+```{r}
+DOF %>% 
+  distinct(dataset, n, paramsNull, paramsAlternative, DOF1, DOF2) %>%
+  knitr::kable()
+```
+
+No we calculate the F-statistics per protein and compare them to the corresponding F-distribution to derive p-values:
+```{r}
+fStatistics <- DOF %>%
+  mutate(fStat = (rssDiff/DOF1) / (rssAlternative/DOF2),
+         pVal = 1 - pf(fStat, df1 = DOF1, df2 = DOF2),
+         pAdj = p.adjust(pVal, "BH"))
+```
+
+We plot the F-statistics against the theoretical F-distribution to check how well the null distribution is approximated now:
+
+```{r}
+ggplot(fStatistics) +
+  geom_density(aes(x = fStat), fill = "steelblue", alpha = 0.5) +
+  geom_line(aes(x = fStat, y = df(fStat, df1 = DOF1, df2 = DOF2)), color = "darkred", size = 1.5) +
+  facet_wrap(~ dataset + n) +
+  theme_bw() +
+  # Zoom in to small values to increase resolution for the proteins under H0:
+  xlim(c(0, 10))
+```
+
+The densities of the theoretical F-distribution (red) do not fit the observed values (blue) very well. While the theoretical distribution tends to overestimate the number of proteins with test statistics smaller than 2.5, it appears to underestimate the amount of proteins with larger values.  This would imply that even for highly specific drugs, we observe many more significant differences than we would expect by chance. This hints at an anti-conservative behaviour of our test with the calculated degree of freedom parameters. This is reflected in the p-value distributions. If the distribution assumptions were met, we would expect the null cases to follow a uniform distribution, with a peak on the left for the non-null cases. Instead, we observe a tendency to obtain fewer values than expected in the middle range (around 0.5), but distinct peaks to the left.
+
+```{r}
+ggplot(fStatistics) +
+  geom_histogram(aes(x = pVal, y = ..density..), fill = "steelblue", alpha = 0.5, boundary = 0) +
+  geom_line(aes(x = pVal, y = dunif(pVal)), color = "darkred", size = 1.5) +
+  facet_wrap(~ dataset + n) +
+  theme_bw()
+```
+
+
+### How to estimate the degrees of freedom
+
+In the paper, we describe an alternative way to estimate the degrees of freedom by fitting $\chi^2$ distributions to the numerator and denominator across all proteins in a dataset. To enable fitting of the distributions, we first need to re-scale the variables by a scaling factor. Because the scaling factors are characteristic for each dataset (it depends on the variances of the residuals in the respective dataset), we estimate them from the data according to:
 
 \begin{align} \label{eq:scale-param}
 \sigma_0^2 &= \frac{1}{2} \frac{V}{M},
@@ -497,21 +536,99 @@ In order to compute F-statistics per protein and dataset according to Equation(\
 
 where $V$ is the variance of the distribution, and $M$ is the mean of the distribution.
 
-We estimate $V$ and $M$ from the empirical distributions of the RSS differences $(\operatorname{RSS}^1 - \operatorname{RSS}^0)$. To increase robustness, we estimate $M$ and $V$ by their D-estimates @Marazzi2002 (median and median absolute deviation). Values of $(\operatorname{RSS}^1 - \operatorname{RSS}^0)$ within the upper 5\%-quantile are excluded for estimation of $M$ and $V$, but their respective proteins were included again for p-value calculation.
+We estimate $V$ and $M$ from the empirical distributions of the RSS differences $(\operatorname{RSS}^1 - \operatorname{RSS}^0)$. To increase robustness, we estimate $M$ and $V$ by their D-estimates @Marazzi2002 (median and median absolute deviation). 
 
 ```{r estimate_scaling_factors}
-rssFiltered <- rssPerModel %>%
-  group_by(dataset)# %>%
-  # filter(rssDiff <= quantile(rssDiff, 0.99, na.rm = TRUE))
-
 scalingFactors <- rssFiltered %>%
   group_by(dataset) %>%
   summarise(M = median(rssDiff, na.rm = T), V = mad(rssDiff, na.rm = T)^2) %>%
   ungroup %>%
   mutate(s0_sq = 1/2 * V/M)
 
-scalingFactors %>% knitr::kable(digits = 9)
+scalingFactors %>% knitr::kable(digits = 4)
 ```
+
+We scale the numerator and denominator in Equation (\ref{eq:f_stat}) by these scaling factors and estimate the degree of freedom parameters by fitting unscaled $\chi^2$ distributions.
+
+First we add the scaling factors to the filtered RSS data as a separate column:
+```{r scaled_rss}
+rssScaled <- scalingFactors %>%
+  dplyr::select(dataset, s0_sq) %>%
+  left_join(rssFiltered, by = "dataset") %>%
+  mutate(rssDiff = rssDiff/s0_sq,
+         rssAlternative = rssAlternative/s0_sq)
+```
+
+Then we fit the degrees of freedom parameters numerically. This estimation proves to be fairly robust regarding the choice of the initial values, so we choose a small value of 1 for each optimization.
+
+```{r estimate_DOF, warning=FALSE}
+newDOF <- rssScaled %>%
+  group_by(dataset) %>%
+  do(
+    data.frame(
+      DOF1 = MASS::fitdistr(x = .$rssDiff, densfun = "chi-squared", start = list(df = 1))[["estimate"]],
+      DOF2 = MASS::fitdistr(x = .$rssAlternative, densfun = "chi-squared", start = list(df = 1))[["estimate"]]
+    ))
+```
+
+Finally, we can compute the test statistics according to Equation (\ref{eq:f_stat}) and compare them to the F-distribution:
+
+```{r compute_F}
+newFStatistics <- newDOF %>%
+  left_join(rssScaled, by = "dataset") %>%
+  mutate(fStat = (rssDiff/DOF1) / (rssAlternative/DOF2),
+         pVal = 1 - pf(fStat, df1 = DOF1, df2 = DOF2),
+         pAdj = p.adjust(pVal, "BH"))
+```
+
+We plot the F-statistics against the theoretical F-distribution to check how well the null distribution is approximated now:
+
+```{r}
+ggplot(newFStatistics) +
+  geom_density(aes(x = fStat), fill = "steelblue", alpha = 0.5) +
+  geom_line(aes(x = fStat, y = df(fStat, df1 = DOF1, df2 = DOF2)), color = "darkred", size = 1.5) +
+  facet_wrap(~ dataset) +
+  theme_bw() +
+  # Zoom in to small values to increase resolution for the proteins under H0:
+  xlim(c(0, 10))
+```
+
+Also check the p-value histograms. We expect the null cases to follow a uniform distribution, with a peak on the left for the non-null cases:
+```{r}
+ggplot(newFStatistics) +
+  geom_histogram(aes(x = pVal, y = ..density..), fill = "steelblue", alpha = 0.5, boundary = 0) +
+  geom_line(aes(x = pVal, y = dunif(pVal)), color = "darkred", size = 1.5) +
+  facet_wrap(~ dataset) +
+  theme_bw()
+```
+
+The new F-statistics and p-values fit the expected distributions substantially better than before.
+
+## Detect significantly shifted proteins
+
+Finally, we can select proteins that are significantly shifted by putting a threshold on the Benjamini-Hochberg corrected p-values.
+
+```{r selectHits}
+topHits <- newFStatistics %>%
+  filter(pAdj <= 0.01)
+```
+
+How many proteins were found per dataset?
+```{r countHits}
+topHits %>%
+  group_by(dataset) %>%
+  summarise(hits = n())
+```
+
+Let us look at the targets detected for each compound treatment. These are the same proteins whose melting curves are shown in Fig. S3, S4, S6, and S7.
+```{r showHits}
+topHits %>%
+  dplyr::select(dataset, uniqueID, fStat, pVal, pAdj) %>%
+  arrange(-fStat) %>%
+  split(., .$dataset) %>%
+  lapply(., knitr::kable)
+```
+
 
 
 # Session info
