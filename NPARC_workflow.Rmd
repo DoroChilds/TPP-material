@@ -8,7 +8,7 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+knitr::opts_chunk$set(echo = TRUE, cache = FALSE)
 options(knitr.kable.NA = '')
 ```
 
@@ -119,14 +119,15 @@ To assess whether there is a significant difference between both treatment group
 Because we have to repeat the fitting several times in this workflow, we define a function that we can call repeatedly:
 ```{r define_fit_fct}
 fitSingleSigmoid <- function(x, y, start=c(Pl = 0, a = 550, b = 10)){
-  nls(formula= y ~ (1 - Pl)  / (1+exp((b - a/x))) + Pl, 
-      start=start, 
-      data=list(x=x, y=y),
-      na.action = na.exclude, 
-      algorithm = "port",
-      lower = c(0.0, 1e-5, 1e-5), 
-      upper = c(1.5, 15000, 250),
-      control = nls.control(maxiter=50, warnOnly = TRUE))
+  try(nls(formula= y ~ (1 - Pl)  / (1+exp((b - a/x))) + Pl, 
+          start=start, 
+          data=list(x=x, y=y),
+          na.action = na.exclude, 
+          algorithm = "port",
+          lower = c(0.0, 1e-5, 1e-5), 
+          upper = c(1.5, 15000, 250),
+          control = nls.control(maxiter=50)), 
+      silent = TRUE)
 }
 ```
 
@@ -260,14 +261,15 @@ repeatFits <- function(x, y){
     
     i <- i + 1
     
-    doFit <- !m$convInfo$isConv & i < 100
+    # doFit <- !m$convInfo$isConv & i < 100
+    doFit <- inherits(m, "try-error") & i < 100
     
     doVaryPars <- TRUE
   }
   
-  if (!m$convInfo$isConv & i == 100){
-    class(m) <- "try-error"
-  }
+  # if (!m$convInfo$isConv & i == 100){
+  #   class(m) <- "try-error"
+  # }
   
   return(m)
 }
@@ -346,7 +348,7 @@ alternativePredictions <- tppData %>%
   ungroup
 ```
 
-```{r}
+```{r combinePredictions}
 # Make unique columns for merge to a common data frame:
 dat1 <-  nullPredictions %>%
   dplyr::rename(nullPrediction = .fitted,
@@ -364,7 +366,7 @@ allPredictions <- full_join(dat1, dat2,
 ```
 
 Let us look at the columns of the data frame `allPredictions`:
-```{r summary_allPredictions}
+```{r summarizePredictions}
 allPredictions %>%
   mutate(dataset = factor(dataset),
          temperature = factor(temperature),
@@ -377,18 +379,13 @@ allPredictions %>%
 ## Compute RSS values
 In order to quantify the improvement in goodness-of-fit of the alternative model relative to the null model, we compute the sum of squared residuals (RSS). 
 
-```{r compute_rss_all_datasets}
+```{r computeRSS}
 rssPerModel <- allPredictions %>%
   group_by(dataset, uniqueID) %>%
-  summarise(n = sum(!is.na(nullResiduals) * !is.na(alternativeResiduals)), 
+  summarise(fittedValues = sum(!is.na(nullResiduals) * !is.na(alternativeResiduals)), 
             rssNull = sum(nullResiduals^2, na.rm = FALSE),
             rssAlternative = sum(alternativeResiduals^2, na.rm = FALSE)) %>%
   ungroup
-
-rssPerModel %>%
-  group_by(dataset) %>%
-  do(table(.$n) %>% as.tibble()) %>%
-  knitr::kable()
 ```
 
 We also compute the reduction in goodness-of-fit for each protein:
@@ -402,6 +399,15 @@ Proteins for which $\operatorname{RSS}^1$ is not smaller than $\operatorname{RSS
 rssFiltered <- rssPerModel %>% filter(rssDiff > 0)
 ```
 
+For how many proteins could be compute RSS differences per dataset?
+```{r countRSS}
+rssFiltered %>%
+  group_by(dataset) %>%
+  do(table(.$fittedValues) %>% as.tibble() %>% dplyr::rename(fittedValues = Var1)) %>%
+  knitr::kable()
+```
+
+
 Let us look at the first entries and at the column summaries of the data frame `rssPerModel`:
 
 ```{r head_rssPerModel}
@@ -413,12 +419,12 @@ rssFiltered %>%
 ```{r summary_rssPerModel}
 rssFiltered %>%
   mutate(dataset = factor(dataset),
-         n = factor(n)) %>%
+         fittedValues = factor(fittedValues)) %>%
   summary(digits = 2) %>% 
   knitr::kable()
 ```
 
-<!-- <!-- ## Compare to results published in the manuscript --> -->
+<!-- <!-- ## Compare to results published in the manuscript -->
 <!-- ```{r load_paper_results, echo = FALSE, eval=FALSE} -->
 <!-- #  for comparison: load in-house code results as reported in the paper -->
 <!-- f_paper_results <- "/Users/dorotheechilds/Work/Projects/Thermal_proteome_profiling/Gitlab_repositories/Gitlab_paper_nonparametric_TPP/master/04 Data/cache/NPARC_results_min_qupm=1.Rds" -->
@@ -480,23 +486,23 @@ rssFiltered %>%
 In order to compute F-statistics per protein and dataset according to Equation (\ref{eq:f_stat}), we need to know the degrees of freedom of the corresponding null distribution. If we could assume independent and identically distributed (iid) residuals, we could compute them from the number of fitted values and model parameters. In the following, we will show why this simple equation is not appropriate for the curve data we are working with.
 
 First, we compute the degrees of freedom that we would assume for iid residuals:
-```{r compute_DOF_iid}
+```{r computeDOFiid}
 DOF <- rssFiltered %>%
   mutate(paramsNull = 3,
-         paramsAlternative = ifelse(n > 40, yes = 9, no = 6)) %>%
+         paramsAlternative = ifelse(fittedValues > 40, yes = 9, no = 6)) %>%
   mutate(DOF1 = paramsAlternative - paramsNull,
-         DOF2 = n - paramsAlternative)
+         DOF2 = fittedValues - paramsAlternative)
 ```
 
 Let us take a look at the computed degrees of freedom:
-```{r}
+```{r showDOFiid}
 DOF %>% 
-  distinct(dataset, n, paramsNull, paramsAlternative, DOF1, DOF2) %>%
+  distinct(dataset, fittedValues, paramsNull, paramsAlternative, DOF1, DOF2) %>%
   knitr::kable()
 ```
 
 No we calculate the F-statistics per protein and compare them to the corresponding F-distribution to derive p-values:
-```{r}
+```{r computeFiid}
 fStatistics <- DOF %>%
   mutate(fStat = (rssDiff/DOF1) / (rssAlternative/DOF2),
          pVal = 1 - pf(fStat, df1 = DOF1, df2 = DOF2),
@@ -505,11 +511,11 @@ fStatistics <- DOF %>%
 
 We plot the F-statistics against the theoretical F-distribution to check how well the null distribution is approximated now:
 
-```{r}
+```{r plotFiid}
 ggplot(fStatistics) +
   geom_density(aes(x = fStat), fill = "steelblue", alpha = 0.5) +
   geom_line(aes(x = fStat, y = df(fStat, df1 = DOF1, df2 = DOF2)), color = "darkred", size = 1.5) +
-  facet_wrap(~ dataset + n) +
+  facet_wrap(~ dataset + fittedValues) +
   theme_bw() +
   # Zoom in to small values to increase resolution for the proteins under H0:
   xlim(c(0, 10))
@@ -517,11 +523,11 @@ ggplot(fStatistics) +
 
 The densities of the theoretical F-distribution (red) do not fit the observed values (blue) very well. While the theoretical distribution tends to overestimate the number of proteins with test statistics smaller than 2.5, it appears to underestimate the amount of proteins with larger values.  This would imply that even for highly specific drugs, we observe many more significant differences than we would expect by chance. This hints at an anti-conservative behaviour of our test with the calculated degree of freedom parameters. This is reflected in the p-value distributions. If the distribution assumptions were met, we would expect the null cases to follow a uniform distribution, with a peak on the left for the non-null cases. Instead, we observe a tendency to obtain fewer values than expected in the middle range (around 0.5), but distinct peaks to the left.
 
-```{r}
+```{r plotPiid}
 ggplot(fStatistics) +
   geom_histogram(aes(x = pVal, y = ..density..), fill = "steelblue", alpha = 0.5, boundary = 0) +
   geom_line(aes(x = pVal, y = dunif(pVal)), color = "darkred", size = 1.5) +
-  facet_wrap(~ dataset + n) +
+  facet_wrap(~ dataset + fittedValues) +
   theme_bw()
 ```
 
@@ -583,7 +589,7 @@ newFStatistics <- newDOF %>%
 
 We plot the F-statistics against the theoretical F-distribution to check how well the null distribution is approximated now:
 
-```{r}
+```{r plotFnew}
 ggplot(newFStatistics) +
   geom_density(aes(x = fStat), fill = "steelblue", alpha = 0.5) +
   geom_line(aes(x = fStat, y = df(fStat, df1 = DOF1, df2 = DOF2)), color = "darkred", size = 1.5) +
@@ -594,7 +600,7 @@ ggplot(newFStatistics) +
 ```
 
 Also check the p-value histograms. We expect the null cases to follow a uniform distribution, with a peak on the left for the non-null cases:
-```{r}
+```{r plotPnew}
 ggplot(newFStatistics) +
   geom_histogram(aes(x = pVal, y = ..density..), fill = "steelblue", alpha = 0.5, boundary = 0) +
   geom_line(aes(x = pVal, y = dunif(pVal)), color = "darkred", size = 1.5) +
@@ -621,7 +627,7 @@ topHits %>%
 ```
 
 Let us look at the targets detected for each compound treatment. These are the same proteins whose melting curves are shown in Fig. S3, S4, S6, and S7.
-```{r showHits}
+```{r showHits, results='asis'}
 topHits %>%
   dplyr::select(dataset, uniqueID, fStat, pVal, pAdj) %>%
   arrange(-fStat) %>%
@@ -629,7 +635,7 @@ topHits %>%
   lapply(., knitr::kable)
 ```
 
-
+# Compare to the Tm-based approach
 
 # Session info
 
