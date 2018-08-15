@@ -9,7 +9,6 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, cache = FALSE)
-options(knitr.kable.NA = '')
 ```
 
 # Introduction
@@ -21,21 +20,20 @@ Load necessary packages:
 ```{r dependencies, message=FALSE}
 library(tidyverse)
 library(broom)
+library(knitr)
 ```
 
 # Data import
 
-First we load the data from the different TPP experiments. All data have been downloaded from the supplements of the respective publications [@Franken2015, @Reinhard2015, @Savitski2014] converted into tidy format, and concatenated into one table. This table will be made available as supplementary material to the paper. Until then, it can be found in the same folder as this vignette.
+First we load the data from the different TPP experiments. All data have been downloaded from the supplements of the respective publications [@Franken2015, @Reinhard2015, @Savitski2014], converted into tidy format, and concatenated into one table. This table will be made available as supplementary material to the paper. Until then, it can be found in the same folder as this vignette.
 
 ```{r load_data}
 tppData <- readRDS("tppData.Rds")
 ```
 
-Let's take a look at the imported data.
-
-Here are the first lines:
+Let's take a look at the first lines of the imported data:
 ```{r data_head}
-head(tppData) %>% knitr::kable()
+tppData %>% head %>% kable()
 ```
 
 And a data summary:
@@ -44,8 +42,8 @@ tppData %>%
   mutate(molarDrugConcentration = factor(molarDrugConcentration), 
          replicate = factor(replicate), 
          dataset = factor(dataset)) %>% 
-  summary %>% 
-  knitr::kable()
+  summary() %>% 
+  kable()
 ```
 
 # Data preprocessing
@@ -56,12 +54,12 @@ First, we remove all decoy proteins remaining in the panobinostat data. They can
 tppData <- tppData %>% filter(!grepl("###[[:alnum:]]*###", uniqueID))
 ```
 
-Next, we remove all proteins that were not found with at least one unique peptide
+Next, we remove all proteins that were not found with at least one unique peptide.
 ```{r qupm_filter, results='asis'}
 tppData <- filter(tppData, uniquePeptideMatches >= 1)
 ```
 
-Next, we remove all proteins that only contain missing values
+Next, we remove all proteins that only contain missing values.
 ```{r remove_NAs, results='asis'}
 tppData <- tppData %>% filter(!is.na(relAbundance))
 ```
@@ -90,19 +88,21 @@ tppData %>%
   distinct %>% 
   group_by(dataset) %>% 
   tally %>%
-  knitr::kable()
+  kable()
 ```
 
 # Illustrative example
 
 We first illustrate the principles of nonparametric analysis of response curves (NPARC) on an example protein (STK4) from the staurosporine dataset. The same protein is shown in Figures 1 and 2 of the paper.
 
-Select protein:
+## Select data
+
+We first select all data entries belonging to the desired protein and dataset:
 ```{r select_stk4}
 stk4 <- filter(tppData, dataset == "Staurosporine", grepl("STK4", uniqueID))
 ```
 
-Plot measurements:
+To obtain a first impression of the measurements in each experimental group, we generate a plot of the measurements:
 ```{r plot_stk4}
 stk4_plot <- ggplot(stk4, aes(x = temperature, y = relAbundance)) +
   geom_point(aes(shape = factor(replicate), color = factor(molarDrugConcentration))) +
@@ -113,8 +113,10 @@ stk4_plot <- ggplot(stk4, aes(x = temperature, y = relAbundance)) +
 
 print(stk4_plot)
 ```
+We will show how to add the fitted curves to this plot in the following steps.
 
-To assess whether there is a significant difference between both treatment groups, we fit a null and an alternative models to the data. The null model fits a sigmoid melting curve through all data points irrespective of experimental condition. The alternative model fits separate melting curves per experimental group (vehicle: 0 muM staurosporine, treatment: 20 muM staurosporine). 
+## Define function for model fitting
+To assess whether there is a significant difference between both treatment groups, we will fit a null model and an alternative models to the data. The null model fits a sigmoid melting curve through all data points irrespective of experimental condition. The alternative model fits separate melting curves per experimental group (vehicle: 0 muM staurosporine, treatment: 20 muM staurosporine).
 
 Because we have to repeat the fitting several times in this workflow, we define a function that we can call repeatedly:
 ```{r define_fit_fct}
@@ -133,7 +135,7 @@ fitSingleSigmoid <- function(x, y, start=c(Pl = 0, a = 550, b = 10)){
 
 ## Fit null models
 
-First, we use this function to fit the null model. In order to add the predicted curve to our data frame, we use the function `augment` from the `broom` package to obtain the predictions in tabular format. It also returns the residuals which we will need later for the hypothesis test.
+Now, we can use the function defined in the previous Section to fit the null model. This function will return an `R` object of class `nls`. To obtain the predictions at each temperature in tabular format, we will use the function `augment` from the `broom` package. It also returns the corresponding residuals which we will need later for the hypothesis test. By appending the returned predictions and residuals to our data frame with the measurements for STK4, we ensure that relevant data is collected in the same table and can be added to the plot for visualization.
 
 ```{r fit_null_stk4}
 nullFit <- fitSingleSigmoid(x = stk4$temperature, y = stk4$relAbundance)
@@ -201,7 +203,7 @@ rssPerModel <- stk4 %>%
   summarise(rssNull = sum(nullResiduals^2),
             rssAlternative = sum(alternativeResiduals^2))
 
-knitr::kable(rssPerModel, digits = 4)
+kable(rssPerModel, digits = 4)
 ```
 
 These values will be used to construct the F-statistic according to
@@ -232,44 +234,33 @@ tppData %>%
   distinct(dataset, replicate, molarDrugConcentration) %>% 
   filter(molarDrugConcentration > 0) %>%
   dplyr::rename(`drug concentration (treatment groups)` = molarDrugConcentration) %>%
-  knitr::kable()
+  kable()
 ```
 
 ## Define functions
-We fit the models by the same function as illustrated on the STK4 example above. In order to iterate over all proteins and experimental factors, we split the data by the `dplyr::group_by` function, and loop over all subsets by the `dplyr::do` function Again, we compute the predicted values and the corresponding residuals by the `broom` package. Because we will need to re-use the code for invoking the model fitting and computation of the residuals, we encapsulate it into a function that we can re-use for the null and alternative model fits of each protein. It will also make debugging easier if the code lives within a separate function.
+We fit the models by the same function as illustrated on the STK4 example above. In order to iterate over all proteins and experimental factors, we split the data by the `dplyr::group_by` function, and loop over all subsets by the `dplyr::do` function. For each model, we retrieve the residuals by the function `residuals()` and compute the sum of their squared values (RSS). Because we will need to re-use the code for model fitting and RSS computation, we encapsulate it into a function that we can re-use for the null and alternative model fits of each protein. It will also make debugging easier if the code lives within a separate function.
 
 For a few proteins, the nonlinear least-squares optimization will not converge with the given start parameters. For some of these proteins, however, convergence can be obtained after adding a small random noise to the start paramters. To this purpose, we write a function that starts the optimization repeatedly with randomly perturbed start parameters for such proteins:
 
 ```{r define_repeatFits}
-repeatFits <- function(x, y){
+repeatFits <- function(x, y, seed = NULL, alwaysPermute = FALSE, maxAttempts = 100){
   
   start <- c(Pl = 0, a = 550, b = 10)
-  
   i <- 0
-  
   doFit <- TRUE
+  doVaryPars <- alwaysPermute
   
-  doVaryPars <- FALSE
-  
-  set.seed(123)
-  
-  while (doFit){
-    
-    startTmp <- start * (1 + doVaryPars*runif(1, -0.5, 0.5))
-    
-    m <- fitSingleSigmoid(x = x, y = y, start = startTmp)
-    
-    i <- i + 1
-    
-    # doFit <- !m$convInfo$isConv & i < 100
-    doFit <- inherits(m, "try-error") & i < 100
-    
-    doVaryPars <- TRUE
+  if (!is.null(seed)){
+    set.seed(seed)
   }
   
-  # if (!m$convInfo$isConv & i == 100){
-  #   class(m) <- "try-error"
-  # }
+  while (doFit){
+    startTmp <- start * (1 + doVaryPars*runif(1, -0.5, 0.5))
+    m <- fitSingleSigmoid(x = x, y = y, start = startTmp)
+    i <- i + 1
+    doFit <- inherits(m, "try-error") & i < maxAttempts
+    doVaryPars <- TRUE
+  }
   
   return(m)
 }
@@ -277,40 +268,27 @@ repeatFits <- function(x, y){
 
 
 ```{r define_fct_returnPredictions}
-returnPredictions <- function(dat){
-  # The data frame dat contains the subset of the data for one protein and 
-  # selected experimental factor. It has the following columns:
-  # - temperature
-  # - relAbundance
-  # - replicate
-  # - molarDrugConcentration
+computeRSS <- function(x, y, seed = NULL, alwaysPermute = FALSE, maxAttempts = 100){
   
-  # Fit model:
-  fit <- repeatFits(x = dat$temperature, 
-                    y = dat$relAbundance)
+  # Start model fitting
+  fit <- repeatFits(x = x, y = y, seed = seed, 
+                    alwaysPermute = alwaysPermute, 
+                    maxAttempts = maxAttempts)
   
-  # Check whether the model fit converged. If yes, obtain the predicted values 
-  # and residuals and add annotation from the original data. 
   if (!inherits(fit, "try-error")){
-    
-    # Obtain data frame with predicted values and residuals:
-    out <- broom::augment(fit) %>%
-      # Annotate by replicate and treatment group:
-      mutate(replicate = dat$replicate,
-             molarDrugConcentration = dat$molarDrugConcentration) %>%
-      # Rename generic columns `x`. `y` that were added by the augment function 
-      # to `temperature` and `relAbundance`:
-      dplyr::rename(temperature = x, relAbundance = y)
-    
+    # If model fit converged, obtain data frame containing predicted values and residuals
+    resid <- residuals(fit)
+    rss <- sum(resid^2, na.rm = TRUE)
+    nResid <- sum(!is.na(resid))
+    isConverged <- TRUE
   } else {
-    # If model fit did not converge, return an empty data frame.
-    out <- tibble(temperature = dat$temperature, 
-                  relAbundance = NA,
-                  replicate = dat$replicate,
-                  molarDrugConcentration = dat$molarDrugConcentration)
+    # If model fit did not converge, return default values
+    rss <- NA
+    nResid <- NA
+    isConverged <- FALSE
   }
   
-  return(out)
+  return(data.frame(rss = rss, nResid = nResid, isConverged = isConverged))
 }
 ```
 
@@ -319,110 +297,156 @@ returnPredictions <- function(dat){
 ## Fit null models
 
 Now we can fit the null models to each protein in each dataset:
-```{r fit_null_all_datasets, warning=FALSE, cache=TRUE}
+
+```{r, echo = FALSE}
 # debug(returnPredictions)
 # debug(repeatFits)
+```
 
-nullPredictions <- tppData %>% #filter(uniqueID == "ABHD10_NA", dataset == "Panobinostat") %>%
+```{r fit_null_all_datasets, warning=FALSE, cache=TRUE}
+nullRSS <- tppData %>% #filter(dataset == "Panobinostat") %>% #filter(uniqueID == "ABHD10_NA", dataset == "Panobinostat") %>%
   # Iterate over all proteins per dataset:
   group_by(dataset, uniqueID) %>%
   do(
-    # Invoke function to fit models and return a data frame with the predicted 
-    # values and residuals for the current protein:
-    returnPredictions(.)
+    # Invoke model fitting and RSS computation for the current protein:
+    computeRSS(x = .$temperature, y = .$relAbundance, seed = 123)
     ) %>%
   ungroup 
 ```
 
+<!-- Show the first rows: -->
+<!-- ```{r inspect_null_rss} -->
+<!-- nullRSS %>% head %>% kable() -->
+<!-- ``` -->
+
+Show a data summary:
+```{r summarize_null_rss}
+nullRSS %>%
+  mutate(dataset = factor(dataset), nResid = factor(nResid)) %>%
+  summary()
+```
+
+
+<!-- ```{r, eval = FALSE, echo = FALSE} -->
+<!-- # List all proteins for which the model fit did not converge: -->
+<!-- nullRSS %>% filter(!isConverged) -->
+<!-- ``` -->
+
+
 ## Fit alternative models
 
-Next we fit the alternative models and combine the predictions with those of the null model fits:
-```{r fit_alterantive_all_datasets, warning=FALSE, cache=TRUE}
-alternativePredictions <- tppData %>%
-  # Iterate over all proteins and treatment groups per dataset:
+Next we fit the alternative models:
+```{r fit_alternative_all_datasets, warning=FALSE, cache=TRUE}
+alternativeRSS <- tppData %>% #filter(dataset == "Panobinostat") %>%
   group_by(dataset, uniqueID, molarDrugConcentration) %>%
   do(
-    # Invoke model fitting as described above
-    returnPredictions(.)
+    computeRSS(x = .$temperature, y = .$relAbundance, seed = 123)
     ) %>%
   ungroup
 ```
 
-```{r combinePredictions}
-# Make unique columns for merge to a common data frame:
-dat1 <-  nullPredictions %>%
-  dplyr::rename(nullPrediction = .fitted,
-                nullResiduals = .resid)
+<!-- Show the first rows: -->
+<!-- ```{r inspect_alternative_rss} -->
+<!-- alternativeRSS %>% head %>% kable() -->
+<!-- ``` -->
 
-dat2 <- alternativePredictions %>%
-  dplyr::rename(alternativePrediction = .fitted,
-                alternativeResiduals = .resid)
-
-# Combine model results into common data frame:
-allPredictions <- full_join(dat1, dat2,  
-                            by = c("dataset", "uniqueID", "replicate", 
-                                   "molarDrugConcentration", "temperature", 
-                                   "relAbundance"))
-```
-
-Let us look at the columns of the data frame `allPredictions`:
-```{r summarizePredictions}
-allPredictions %>%
-  mutate(dataset = factor(dataset),
-         temperature = factor(temperature),
-         replicate = factor(replicate),
-         molarDrugConcentration = factor(molarDrugConcentration)) %>%
-  summary(digits = 2) %>% knitr::kable()
+Show a data summary:
+```{r summarize_alternative_rss}
+alternativeRSS %>%
+  mutate(dataset = factor(dataset), nResid = factor(nResid)) %>%
+  summary()
 ```
 
 
-## Compute RSS values
-In order to quantify the improvement in goodness-of-fit of the alternative model relative to the null model, we compute the sum of squared residuals (RSS). 
+<!-- ```{r, eval = FALSE, echo = FALSE} -->
+<!-- # List all proteins for which the model fit did not converge: -->
+<!-- alternativeRSS %>% filter(!isConverged) -->
+<!-- ``` -->
 
-```{r computeRSS}
-rssPerModel <- allPredictions %>%
-  group_by(dataset, uniqueID) %>%
-  summarise(fittedValues = sum(!is.na(nullResiduals) * !is.na(alternativeResiduals)), 
-            rssNull = sum(nullResiduals^2, na.rm = FALSE),
-            rssAlternative = sum(alternativeResiduals^2, na.rm = FALSE)) %>%
+
+Summarize RSS over all treatment groups:
+```{r collate_alternative_rss}
+alternativeRSSCollated <- alternativeRSS %>%
+  group_by(dataset) %>%
+  mutate(maxGroups = length(unique(molarDrugConcentration))) %>%
+  group_by(dataset, uniqueID, maxGroups) %>% 
+  summarise(rss = sum(rss, na.rm = FALSE), 
+            nResid = sum(nResid, na.rm = FALSE),
+            groupsConverged = sum(isConverged)) %>%
+  mutate(allConverged = groupsConverged == maxGroups) %>%
   ungroup
 ```
 
-We also compute the reduction in goodness-of-fit for each protein:
+<!-- Show the first rows: -->
+<!-- ```{r} -->
+<!-- alternativeRSSCollated %>% head %>% kable() -->
+<!-- ``` -->
+
+Count numbers of fitted values occuring per dataset:
+```{r}
+alternativeRSSCollated %>%
+  group_by(dataset, nResid, allConverged, maxGroups) %>%
+  tally() %>%
+  kable()
+```
+
+## Combine results from both model fits
+Combine the RSS values of all proteins for which the models converged in all groups:
+```{r combineRSS}
+# Make unique columns for merge to a common data frame:
+dat1 <- nullRSS %>% dplyr::rename(rss0 = rss, n0 = nResid)
+dat2 <- alternativeRSSCollated %>% dplyr::rename(rss1 = rss, n1 = nResid)
+
+# Perform merge of both tables:
+allRSS <- full_join(dat1, dat2, by = c("dataset", "uniqueID")) %>% 
+  filter(isConverged, allConverged)
+```
+
+In order to quantify the improvement in goodness-of-fit of the alternative model relative to the null model, we compute the difference in RSS between both models for each protein. Proteins for which $\operatorname{RSS}^1$ is not smaller than $\operatorname{RSS}^0$ are excluded from p-value calculation.
 ```{r computeRSSdiff}
-rssPerModel <- rssPerModel %>%
-  mutate(rssDiff = rssNull - rssAlternative)
+allRSS <- allRSS %>%
+  mutate(rssDiff = rss0 - rss1) %>%
+  mutate(rssDiff = ifelse(rssDiff < 0, NA, rssDiff))
 ```
 
-Proteins for which $\operatorname{RSS}^1$ is not smaller than $\operatorname{RSS}^0)$ are excluded from p-value calculation.
-```{r filterRSS}
-rssFiltered <- rssPerModel %>% filter(rssDiff > 0)
+
+Let us look at the columns of the data frame `allRSS`:
+```{r summarizePredictions}
+allRSS %>%
+  mutate(dataset = factor(dataset), n0 = factor(n0), n1 = factor(n1), maxGroups = factor(maxGroups)) %>%
+  summary()
 ```
 
-For how many proteins could be compute RSS differences per dataset?
+<!-- Which proteins are affected? -->
+<!-- ```{r showNegativeRSSdiffs} -->
+<!-- allRSS %>% -->
+<!--   filter(rssDiff < 0) %>% -->
+<!--   filter(dataset %in% c("Panobinostat", "Staurosporine")) %>% -->
+<!--   kable() -->
+<!-- ``` -->
+
+<!-- Remove these proteins: -->
+<!-- ```{r filterRSS} -->
+<!-- # rssFiltered <- allRSS %>% filter(rssDiff > 0) -->
+<!-- ``` -->
+
+
+For how many proteins could we compute valid RSS differences per dataset?
 ```{r countRSS}
-rssFiltered %>%
+allRSS %>%
   group_by(dataset) %>%
-  do(table(.$fittedValues) %>% as.tibble() %>% dplyr::rename(fittedValues = Var1)) %>%
-  knitr::kable()
+  summarize(n = sum(!is.na(rssDiff))) %>%
+  kable()
 ```
 
 
-Let us look at the first entries and at the column summaries of the data frame `rssPerModel`:
+<!-- Let us look at the first entries and at the column summaries of the data frame `allRSS`: -->
 
-```{r head_rssPerModel}
-rssFiltered %>% 
-  head %>% 
-  knitr::kable(digits = 4)
-```
-
-```{r summary_rssPerModel}
-rssFiltered %>%
-  mutate(dataset = factor(dataset),
-         fittedValues = factor(fittedValues)) %>%
-  summary(digits = 2) %>% 
-  knitr::kable()
-```
+<!-- ```{r head_rssPerModel} -->
+<!-- allRSS %>%  -->
+<!--   head %>%  -->
+<!--   kable(digits = 4) -->
+<!-- ``` -->
 
 <!-- <!-- ## Compare to results published in the manuscript -->
 <!-- ```{r load_paper_results, echo = FALSE, eval=FALSE} -->
@@ -444,7 +468,7 @@ rssFiltered %>%
 <!--          nPaper = factor(nPaper)) %>% -->
 <!--   filter(!is.na(nPaper)) %>% -->
 <!--   summary(digits = 2) %>%  -->
-<!--   knitr::kable() -->
+<!--   kable() -->
 <!-- ``` -->
 
 <!-- ```{r add_paper_results, echo = FALSE, eval=FALSE} -->
@@ -487,24 +511,24 @@ In order to compute F-statistics per protein and dataset according to Equation (
 
 First, we compute the degrees of freedom that we would assume for iid residuals:
 ```{r computeDOFiid}
-DOF <- rssFiltered %>%
+DOF <- allRSS %>%
   mutate(paramsNull = 3,
-         paramsAlternative = ifelse(fittedValues > 40, yes = 9, no = 6)) %>%
+         paramsAlternative = ifelse(n1 > 40, yes = 9, no = 6)) %>%
   mutate(DOF1 = paramsAlternative - paramsNull,
-         DOF2 = fittedValues - paramsAlternative)
+         DOF2 = n1 - paramsAlternative)
 ```
 
 Let us take a look at the computed degrees of freedom:
 ```{r showDOFiid}
 DOF %>% 
-  distinct(dataset, fittedValues, paramsNull, paramsAlternative, DOF1, DOF2) %>%
-  knitr::kable()
+  distinct(dataset, n0, n1, converged0, allConverged1, paramsNull, paramsAlternative, DOF1, DOF2) %>%
+  kable()
 ```
 
 No we calculate the F-statistics per protein and compare them to the corresponding F-distribution to derive p-values:
 ```{r computeFiid}
-fStatistics <- DOF %>%
-  mutate(fStat = (rssDiff/DOF1) / (rssAlternative/DOF2),
+testResults <- DOF %>%
+  mutate(fStat = (rssDiff/DOF1) / (rss1/DOF2),
          pVal = 1 - pf(fStat, df1 = DOF1, df2 = DOF2),
          pAdj = p.adjust(pVal, "BH"))
 ```
@@ -512,10 +536,10 @@ fStatistics <- DOF %>%
 We plot the F-statistics against the theoretical F-distribution to check how well the null distribution is approximated now:
 
 ```{r plotFiid}
-ggplot(fStatistics) +
+ggplot(testResults) +
   geom_density(aes(x = fStat), fill = "steelblue", alpha = 0.5) +
   geom_line(aes(x = fStat, y = df(fStat, df1 = DOF1, df2 = DOF2)), color = "darkred", size = 1.5) +
-  facet_wrap(~ dataset + fittedValues) +
+  facet_wrap(~ dataset + n0 + n1) +
   theme_bw() +
   # Zoom in to small values to increase resolution for the proteins under H0:
   xlim(c(0, 10))
@@ -524,10 +548,10 @@ ggplot(fStatistics) +
 The densities of the theoretical F-distribution (red) do not fit the observed values (blue) very well. While the theoretical distribution tends to overestimate the number of proteins with test statistics smaller than 2.5, it appears to underestimate the amount of proteins with larger values.  This would imply that even for highly specific drugs, we observe many more significant differences than we would expect by chance. This hints at an anti-conservative behaviour of our test with the calculated degree of freedom parameters. This is reflected in the p-value distributions. If the distribution assumptions were met, we would expect the null cases to follow a uniform distribution, with a peak on the left for the non-null cases. Instead, we observe a tendency to obtain fewer values than expected in the middle range (around 0.5), but distinct peaks to the left.
 
 ```{r plotPiid}
-ggplot(fStatistics) +
+ggplot(testResults) +
   geom_histogram(aes(x = pVal, y = ..density..), fill = "steelblue", alpha = 0.5, boundary = 0) +
   geom_line(aes(x = pVal, y = dunif(pVal)), color = "darkred", size = 1.5) +
-  facet_wrap(~ dataset + fittedValues) +
+  facet_wrap(~ dataset + n0 + n1) +
   theme_bw()
 ```
 
@@ -545,13 +569,14 @@ where $V$ is the variance of the distribution, and $M$ is the mean of the distri
 We estimate $V$ and $M$ from the empirical distributions of the RSS differences $(\operatorname{RSS}^1 - \operatorname{RSS}^0)$. To increase robustness, we estimate $M$ and $V$ by their D-estimates @Marazzi2002 (median and median absolute deviation). 
 
 ```{r estimate_scaling_factors}
-scalingFactors <- rssFiltered %>%
+scalingFactors <- allRSS %>%
+  filter(!is.na(rssDiff)) %>%
   group_by(dataset) %>%
   summarise(M = median(rssDiff, na.rm = T), V = mad(rssDiff, na.rm = T)^2) %>%
   ungroup %>%
   mutate(s0_sq = 1/2 * V/M)
 
-scalingFactors %>% knitr::kable(digits = 4)
+scalingFactors %>% kable(digits = 10)
 ```
 
 We scale the numerator and denominator in Equation (\ref{eq:f_stat}) by these scaling factors and estimate the degree of freedom parameters by fitting unscaled $\chi^2$ distributions.
@@ -560,21 +585,25 @@ First we add the scaling factors to the filtered RSS data as a separate column:
 ```{r scaled_rss}
 rssScaled <- scalingFactors %>%
   dplyr::select(dataset, s0_sq) %>%
-  left_join(rssFiltered, by = "dataset") %>%
+  left_join(allRSS, by = "dataset") %>%
   mutate(rssDiff = rssDiff/s0_sq,
-         rssAlternative = rssAlternative/s0_sq)
+         rss1 = rss1/s0_sq)
 ```
 
 Then we fit the degrees of freedom parameters numerically. This estimation proves to be fairly robust regarding the choice of the initial values, so we choose a small value of 1 for each optimization.
 
 ```{r estimate_DOF, warning=FALSE}
 newDOF <- rssScaled %>%
+  filter(!is.na(rssDiff)) %>%
   group_by(dataset) %>%
   do(
     data.frame(
       DOF1 = MASS::fitdistr(x = .$rssDiff, densfun = "chi-squared", start = list(df = 1))[["estimate"]],
-      DOF2 = MASS::fitdistr(x = .$rssAlternative, densfun = "chi-squared", start = list(df = 1))[["estimate"]]
+      DOF2 = MASS::fitdistr(x = .$rss1, densfun = "chi-squared", start = list(df = 1))[["estimate"]]
     ))
+
+newDOF %>%
+  kable(digits = 10)
 ```
 
 Finally, we can compute the test statistics according to Equation (\ref{eq:f_stat}) and compare them to the F-distribution:
@@ -582,7 +611,7 @@ Finally, we can compute the test statistics according to Equation (\ref{eq:f_sta
 ```{r compute_F}
 newFStatistics <- newDOF %>%
   left_join(rssScaled, by = "dataset") %>%
-  mutate(fStat = (rssDiff/DOF1) / (rssAlternative/DOF2),
+  mutate(fStat = (rssDiff/DOF1) / (rss1/DOF2),
          pVal = 1 - pf(fStat, df1 = DOF1, df2 = DOF2),
          pAdj = p.adjust(pVal, "BH"))
 ```
@@ -623,16 +652,17 @@ How many proteins were found per dataset?
 ```{r countHits}
 topHits %>%
   group_by(dataset) %>%
-  summarise(hits = n())
+  summarise(hits = n()) %>%
+  kable()
 ```
 
-Let us look at the targets detected for each compound treatment. These are the same proteins whose melting curves are shown in Fig. S3, S4, S6, and S7.
+Let us look at the targets detected in each dataset. These are the same proteins whose melting curves are shown in Fig. S3, S4, S6, and S7.
 ```{r showHits, results='asis'}
 topHits %>%
   dplyr::select(dataset, uniqueID, fStat, pVal, pAdj) %>%
   arrange(-fStat) %>%
   split(., .$dataset) %>%
-  lapply(., knitr::kable)
+  lapply(., kable)
 ```
 
 # Compare to the Tm-based approach
