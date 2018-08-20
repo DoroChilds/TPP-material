@@ -270,9 +270,9 @@ tppData %>%
 ```
 
 ## Define functions
-We fit the models by the same function as illustrated on the STK4 example above. In order to iterate over all proteins and treatment groups, we split the data by the `dplyr::group_by()` function, and loop over all subsets by the `dplyr::do()` function. For each model, we retrieve the residuals by the function `residuals()` and compute the sum of their squared values (RSS). We encapsulate this code into a function that we can re-use for the null and alternative model fits of each protein. It will also make debugging easier if the code lives within a separate function.
+We fit the models by the same function as illustrated on the STK4 example above. In order to iterate over all proteins and treatment groups, we split the data by the `dplyr::group_by()` function, and loop over all subsets by the `dplyr::do()` function. For each model, we retrieve the residuals by the function `residuals()` and compute the sum of their squared values (RSS). We encapsulate this code into a function `computeRSS()` that we can re-use for the null and alternative model fits of each protein. It will also make debugging easier if the code lives within a separate function.
 
-For a few proteins, the nonlinear least-squares optimization will not converge with the given start parameters. For some of these proteins, however, convergence can be obtained after adding a small random noise to the start paramters. To this purpose, we write a wrapper around fitSingleSigmoid()` that starts the optimization repeatedly with randomly perturbed start parameters for such proteins:
+For a few proteins, the nonlinear least-squares optimization will not converge with the given start parameters. For some of these proteins, however, convergence can be obtained after adding a small random noise to the start paramters. To this purpose, we write a wrapper function around `fitSingleSigmoid()` that starts the optimization repeatedly with randomly perturbed start parameters for such proteins:
 
 ```{r define_repeatFits}
 repeatFits <- function(x, y, seed = NULL, alwaysPermute = FALSE, maxAttempts = 100){
@@ -323,133 +323,97 @@ computeRSS <- function(x, y, seed = NULL, alwaysPermute = FALSE, maxAttempts = 1
 ```
 
 
+In order to quantify the improvement in goodness-of-fit of the alternative model relative to the null model, we need to compute the difference in RSS between both models for each protein. To this purpose, we define a function to invoke the RSS computation for both models and to return the difference between the resulting values.
+Occasionaly, we encounter proteins for which the optimization converged in such a way that the $\operatorname{RSS}^1$ is not smaller than $\operatorname{RSS}^0$. This is counter-intuitive because we would expect the more complex model to fit the data at least as well as the simpler model. Usually, such a behaviour is caused by sub-optimal local minima of the optimization. For such proteins, we will restart the optimization with different start parameters and check whether the new minima obtained by the optimization enable an improvement in goodness-of-fit from null to alternative model. If we cannot obtain non-negative differences, the proteins will be excluded from the degree of freedom estimation described below.
 
-## Fit null models
-
-Now we can fit the null models to each protein in each dataset:
-
-```{r, echo = FALSE}
-# debug(returnPredictions)
-# debug(repeatFits)
+```{r define_fct_computeRSSdiff}
+computeRSSdiff <- function(x, y, treatment, seed = NULL, maxAttempts = 100, repeatsIfNeg = 0){
+  
+  rssDiff <- -1
+  repeats <- 0
+  alwaysPermute <- FALSE
+  
+  while((is.na(rssDiff) | rssDiff < 0) & repeats <= repeatsIfNeg){
+    
+    nullResults <- computeRSS(x = x, 
+                              y = y, 
+                              seed = seed,  
+                              maxAttempts = maxAttempts, 
+                              alwaysPermute = alwaysPermute)
+    
+    altResults <- tibble(x, y, treatment) %>%
+      group_by(treatment) %>%
+      do(
+        computeRSS(x = .$x, 
+                   y = .$y, 
+                   seed = seed, 
+                   maxAttempts = maxAttempts, 
+                   alwaysPermute = alwaysPermute)
+      ) %>% 
+      ungroup
+    
+    rss0 <- nullResults$rss
+    rss1 <- sum(altResults$rss, na.rm = TRUE)
+    rssDiff <- rss0 - rss1
+    
+    if (repeats > 0){
+      alwaysPermute <- TRUE
+      seed <- NULL
+    }
+    
+    repeats <- repeats + 1
+  }
+  
+  n0 <- nullResults$fittedValues
+  n1 <- sum(altResults$fittedValues)
+  
+  return(tibble(rss0, rss1, rssDiff, n0, n1, repeats))
+}
 ```
 
-```{r fit_null_all_datasets, warning=FALSE, cache=TRUE}
-nullRSS <- tppData %>%
+
+
+## Fit models
+
+Now we can fit the null and alternative models to each protein in each dataset:
+```{r fit_models_all_datasets, warning=FALSE, cache=TRUE, eval = !file.exists("allRSS.RDS")}
+allRSS <- tppData %>% 
   group_by(dataset, uniqueID) %>%
-  do(
-    computeRSS(x = .$temperature, y = .$relAbundance, seed = 123)
-    ) %>%
+  do(computeRSSdiff(x = .$temperature, 
+                    y = .$relAbundance, 
+                    treatment = .$compoundConcentration, 
+                    seed = 123, 
+                    maxAttempts = 100, 
+                    repeatsIfNeg = 10)) %>%
   ungroup
 ```
 
-Show a data summary:
-```{r summarize_null_rss}
-nullRSS %>%
-  mutate(dataset = factor(dataset), fittedValues = factor(fittedValues)) %>%
-  summary()
+```{r echo=FALSE}
+if (!file.exists("allRSS.RDS")){
+  saveRDS(allRSS, "allRSS.RDS")
+}
+allRSS <- readRDS("allRSS.RDS")
 ```
 
-Determine the maximum number of measurements possible per protein in each dataset.
-We will need this information to detect those proteins for which the model converged in each experimental group.
+Determine the maximum number of measurements possible per protein in each dataset. We will need this information to detect those proteins for which the model converged in each experimental group.
 ```{r}
-maxFitted <- nullRSS %>% 
+allRSSannotated <- allRSS %>%
   group_by(dataset) %>%
-  summarise(maxDataPoints = max(fittedValues, na.rm = TRUE))
+  mutate(maxDataPoints = max(n0, na.rm = TRUE)) %>%
+  ungroup %>%
+  mutate(allConverged = (n0 == maxDataPoints & n1 == maxDataPoints)) %>%
+  dplyr::select(-maxDataPoints) %>%   
+  mutate(applicableForTesting = allConverged & rssDiff > 0)
 ```
-
-
-<!-- ```{r, eval = FALSE, echo = FALSE} -->
-<!-- # List all proteins for which the model fit did not converge: -->
-<!-- nullRSS %>% filter(!isConverged) -->
-<!-- ``` -->
-
-
-## Fit alternative models
-
-Next we fit the alternative models:
-```{r fit_alternative_all_datasets, warning=FALSE, cache=TRUE}
-alternativeRSS <- tppData %>%
-  group_by(dataset, uniqueID, compoundConcentration) %>%
-  do(
-    computeRSS(x = .$temperature, y = .$relAbundance, seed = 123)
-    ) %>%
-  ungroup
-```
-
-Show a data summary:
-```{r summarize_alternative_rss}
-alternativeRSS %>%
-  mutate(dataset = factor(dataset), fittedValues = factor(fittedValues)) %>%
-  summary()
-```
-
-
-Count lengths of fitted curves occuring per experiment:
-```{r}
-alternativeRSS %>%
-  group_by(dataset, fittedValues, compoundConcentration) %>%
-  tally() %>%
-  kable()
-```
-
-Compute the final RSS values per protein as the sum of the RSS values in each treatment group:
-```{r collate_alternative_rss}
-alternativeRSSCollated <- alternativeRSS %>%
-  group_by(dataset, uniqueID) %>% 
-  summarise(rss = sum(rss, na.rm = TRUE), 
-            fittedValues = sum(fittedValues))
-```
-
-
-## Combine results from both model fits
-Combine the RSS values of all proteins for which the models converged in all groups:
-```{r combineRSS}
-# Make unique columns for merge to a common data frame:
-dat1 <- nullRSS %>% 
-  dplyr::rename(rss0 = rss, n0 = fittedValues)
-
-dat2 <- alternativeRSSCollated %>% 
-  dplyr::rename(rss1 = rss, n1 = fittedValues)
-
-# Perform merge of both tables:
-allRSS <- full_join(dat1, dat2, 
-                    by = c("dataset", "uniqueID")) %>%
-  # Select proteins for which models converged in each treatment group:
-  left_join(maxFitted, by = "dataset") %>%
-  mutate(allConverged = (n0 == maxDataPoints & 
-                           n1 == maxDataPoints)) %>%
-  dplyr::select(-maxDataPoints)
-```
-
-In order to quantify the improvement in goodness-of-fit of the alternative model relative to the null model, we compute the difference in RSS between both models for each protein. Proteins for which $\operatorname{RSS}^1$ is not smaller than $\operatorname{RSS}^0$ are excluded from p-value calculation.
-```{r computeRSSdiff}
-allRSS <- allRSS %>%
-  mutate(rssDiff = rss0 - rss1) %>%
-  mutate(rssDiff = ifelse(rssDiff < 0, NA, rssDiff)) %>%
-  mutate(applicableForTesting = allConverged & !is.na(rssDiff))
-```
-
 
 Data summary of proteins for which we could compute valid RSS differences per dataset:
 ```{r summarizePredictions}
-allRSS %>%
+allRSSannotated %>%
   filter(applicableForTesting) %>%
   mutate(dataset = factor(dataset), n0 = factor(n0), n1 = factor(n1)) %>%
   summary()
 ```
 
-<!-- Which proteins are affected? -->
-<!-- ```{r showNegativeRSSdiffs} -->
-<!-- allRSS %>% -->
-<!--   filter(rssDiff < 0) %>% -->
-<!--   filter(dataset %in% c("Panobinostat", "Staurosporine")) %>% -->
-<!--   kable() -->
-<!-- ``` -->
-
-<!-- Remove these proteins: -->
-<!-- ```{r filterRSS} -->
-<!-- # rssFiltered <- allRSS %>% filter(rssDiff > 0) -->
-<!-- ``` -->
 
 <!-- Let us look at the first entries and at the column summaries of the data frame `allRSS`: -->
 
@@ -522,7 +486,7 @@ In order to compute F-statistics per protein and dataset according to Equation (
 
 First, we compute the degrees of freedom that we would assume for iid residuals:
 ```{r computeDOFiid}
-DOF <- allRSS %>%
+DOF <- allRSSannotated %>%
   filter(applicableForTesting) %>%
   mutate(paramsNull = 3,
          paramsAlternative = ifelse(n1 > 40, yes = 9, no = 6)) %>%
@@ -582,7 +546,7 @@ where $V$ is the variance of the distribution, and $M$ is the mean of the distri
 We estimate $V$ and $M$ from the empirical distributions of the RSS differences $(\operatorname{RSS}^1 - \operatorname{RSS}^0)$. To increase robustness, we estimate $M$ and $V$ by their D-estimates @Marazzi2002 (median and median absolute deviation). 
 
 ```{r estimate_scaling_factors}
-scalingFactors <- allRSS %>%
+scalingFactors <- allRSSannotated %>%
   filter(applicableForTesting) %>%
   group_by(dataset) %>%
   summarise(M = median(rssDiff, na.rm = T), V = mad(rssDiff, na.rm = T)^2) %>%
@@ -598,7 +562,7 @@ First we add the scaling factors to the filtered RSS data as a separate column:
 ```{r scaled_rss}
 rssScaled <- scalingFactors %>%
   dplyr::select(dataset, s0_sq) %>%
-  left_join(allRSS, by = "dataset") %>%
+  left_join(allRSSannotated, by = "dataset") %>%
   mutate(rssDiff = rssDiff/s0_sq,
          rss1 = rss1/s0_sq)
 ```
@@ -670,8 +634,10 @@ The table `topHits` contains a list-column `data` with separate data frames for 
 How many proteins were found per dataset?
 ```{r countHits}
 topHits %>%
-  mutate(n = map(data, nrow)) %>%
-  unnest(n)
+  mutate(topHits = map(data, nrow)) %>%
+  unnest(topHits) %>%
+  dplyr::select(-data) %>%
+  kable()
 ```
 
 Let us look at the targets detected in each dataset. The same proteins as shown in Fig. S3, S4, S6, and S7 of the paper.
